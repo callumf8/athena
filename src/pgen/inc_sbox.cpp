@@ -6,19 +6,7 @@
 //! \file strat.cpp
 //! \brief Problem generator for stratified 3D shearing sheet.
 //!
-//! PURPOSE:  Problem generator for stratified 3D shearing sheet.  Based on the
-//!   initial conditions described in "Three-dimensional Magnetohydrodynamic
-//!   Simulations of Vertically Stratified Accretion Disks" by Stone, Hawley,
-//!   Gammie & Balbus.
-//!
-//! Several different field configurations and perturbations are possible:
-//! - ifield = 1 - Bz=B0 sin(x1) field with zero-net-flux [default]
-//! - ifield = 2 - uniform Bz
-//! - ifield = 3 - uniform Bz plus sinusoidal perturbation Bz(1+0.5*sin(kx*x1))
-//! - ifield = 4 - B=(0,B0cos(kx*x1),B0sin(kx*x1))= zero-net flux w helicity
-//! - ifield = 5 - uniform By, but only for |z|<2
-//! - ifield = 6 - By with constant beta versus z
-//! - ifield = 7 - zero field everywhere
+//! PURPOSE:  Problem generator for stratified 3D shearing sheet.
 //!
 //! - ipert = 1 - random perturbations to P and V [default, used by HGB]
 //!
@@ -61,21 +49,38 @@ void VertGrav(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
               AthenaArray<Real> &cons_scalar);
+void TurbForce(MeshBlock *pmb, AthenaArray<Real> &cons, Real dt);
+void KickTurbulence(MeshBlock *pmb, const Real time, const Real dt,
+              const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
+              const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
+              AthenaArray<Real> &cons_scalar);
+
+void MySourceTerms(MeshBlock *pmb, const Real time, const Real dt,
+                   const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
+                   const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
+                   AthenaArray<Real> &cons_scalar);
+
 void StratOutflowInnerX3(MeshBlock *pmb, Coordinates *pco,
                          AthenaArray<Real> &a,
                          FaceField &b, Real time, Real dt,
                          int il, int iu, int jl, int ju, int kl, int ku, int ngh);
+
 void StratOutflowOuterX3(MeshBlock *pmb, Coordinates *pco,
                          AthenaArray<Real> &a,
                          FaceField &b, Real time, Real dt,
                          int il, int iu, int jl, int ju, int kl, int ku, int ngh);
+
 namespace {
-Real HistoryBxBy(MeshBlock *pmb, int iout);
+
 Real HistorydVxVy(MeshBlock *pmb, int iout);
 
 // Apply a density floor - useful for large |z| regions
 Real dfloor, pfloor;
 Real Omega_0, qshear;
+int turb;
+Real dtdrive, tdrive, alpha_in;
+Real Lx, Ly, Lz,Lmin;
+Real kx0, ky, kz;
 } // namespace
 
 //====================================================================================
@@ -84,13 +89,29 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
   qshear = pin->GetReal("orbital_advection","qshear");
   Omega_0 = pin->GetReal("orbital_advection","Omega0");
 
-  AllocateUserHistoryOutput(2);
-  EnrollUserHistoryOutput(0, HistoryBxBy, "-BxBy");
-  EnrollUserHistoryOutput(1, HistorydVxVy, "dVxVy");
+  // read in the forced turbulence parameters
+  turb = pin->GetOrAddInteger("problem","turb", 0);
+  if (turb) {
+      dtdrive = pin->GetOrAddReal("problem","dtdrive", 0.001);
+      tdrive = dtdrive;
+      alpha_in = pin->GetOrAddReal("problem","alpha_in", 0.1);
+  
+      Lx = pin->GetReal("mesh","x1max") - pin->GetReal("mesh","x1min");
+      Ly = pin->GetReal("mesh","x2max") - pin->GetReal("mesh","x2min");
+      Lz = pin->GetReal("mesh","x3max") - pin->GetReal("mesh","x3min"); 
+      Real L_min = std::min(Lx, std::min(Ly,Lz));
+
+      kx0 = (2.0*M_PI/L_min);
+      ky = (2.0*M_PI/L_min);
+      kz = (2.0*M_PI/L_min);
+
+  } 
+
+  AllocateUserHistoryOutput(1);
+  EnrollUserHistoryOutput(0, HistorydVxVy, "dVxVy");
 
   // Enroll user-defined physical source terms
-  //   vertical external gravitational potential
-  EnrollUserExplicitSourceFunction(VertGrav);
+  EnrollUserExplicitSourceFunction(MySourceTerms);
 
   // enroll user-defined boundary conditions
   if (mesh_bcs[BoundaryFace::inner_x3] == GetBoundaryFlag("user")) {
@@ -102,15 +123,13 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
 
   if (!shear_periodic) {
     std::stringstream msg;
-    msg << "### FATAL ERROR in hb3.cpp ProblemGenerator" << std::endl
+    msg << "### FATAL ERROR in inc_sbox.cpp ProblemGenerator" << std::endl
         << "This problem generator requires shearing box." << std::endl;
     ATHENA_ERROR(msg);
   }
 
   return;
 }
-
-
 
 //======================================================================================
 //! \fn void MeshBlock::ProblemGenerator(ParameterInput *pin)
@@ -123,13 +142,9 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
   Real B0 = 0.0;
 
   Real SumRd=0.0, SumRvx=0.0, SumRvy=0.0, SumRvz=0.0;
-  // TODO(felker): tons of unused variables in this file: xmin, xmax, rbx, rby, Ly, ky,...
   Real x1, x3;
-  //Real xmin, xmax;
-  //Real x1f, x2f, x3f;
   Real rd(0.0), rp(0.0);
   Real rvx, rvy, rvz;
-  //Real rbx, rby, rbz;
   Real rval;
 
   // initialize density
@@ -137,16 +152,6 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
 
   // Initialize boxsize
   Real Lx = pmy_mesh->mesh_size.x1max - pmy_mesh->mesh_size.x1min;
-  //Real Ly = pmy_mesh->mesh_size.x2max - pmy_mesh->mesh_size.x2min;
-  //Real Lz = pmy_mesh->mesh_size.x3max - pmy_mesh->mesh_size.x3min;
-
-  // initialize wavenumbers
-  int nwx = pin->GetOrAddInteger("problem","nwx",1);
-  //int nwy = pin->GetOrAddInteger("problem","nwy",1);
-  //int nwz = pin->GetOrAddInteger("problem","nwz",1);
-  Real kx = (2.0*PI/Lx)*(static_cast<Real>(nwx));// nxw=-ve for leading wave
-  //Real ky = (2.0*PI/Ly)*(static_cast<Real>(nwy));
-  //Real kz = (2.0*PI/Lz)*(static_cast<Real>(nwz));
 
   // Ensure a different initial random seed for each meshblock.
   std::int64_t iseed = -1 - gid;
@@ -169,23 +174,14 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
   dfloor=pin->GetOrAddReal("hydro","dfloor",(1024*(float_min)));
   pfloor=pin->GetOrAddReal("hydro","pfloor",(1024*(float_min)));
 
-  if (MAGNETIC_FIELDS_ENABLED) {
-    ifield = pin->GetOrAddInteger("problem","ifield", 1);
-    beta = pin->GetReal("problem","beta");
-  }
-
   // Compute pressure based on the EOS.
   if (NON_BAROTROPIC_EOS) {
     pres  = pin->GetOrAddReal("problem","pres",1.0);
   } else {
     iso_cs = peos->GetIsoSoundSpeed();
+    std::cout << "iso_cs = " << iso_cs << std::endl;
+    std::cout << NON_BAROTROPIC_EOS << std::endl;
     pres = den*SQR(iso_cs);
-  }
-
-  // Compute field strength based on beta.
-  if (MAGNETIC_FIELDS_ENABLED) {
-    B0 = std::sqrt(static_cast<Real>(2.0*pres/beta));
-    std::cout << "B0=" << B0 << std::endl;
   }
 
   // With viscosity and/or resistivity, read eta_Ohm and nu_V
@@ -194,11 +190,7 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
     for (int j=js; j<=je; j++) {
       for (int i=is; i<=ie; i++) {
         x1 = pcoord->x1v(i);
-        //x2 = pcoord->x2v(j);
         x3 = pcoord->x3v(k);
-        // x1f = pcoord->x1f(i);
-        // x2f = pcoord->x2f(j);
-        // x3f = pcoord->x3f(k);
 
         // Initialize perturbations
         // ipert = 1 - random perturbations to P/d and V
@@ -246,77 +238,6 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
                                         + SQR(phydro->u(IM3,k,j,i)))/rd;
         } // Hydro
 
-        // Initialize magnetic field.  For 3D shearing box B1=Bx, B2=By, B3=Bz
-        //  ifield = 1 - Bz=B0 std::sin(x1) field with zero-net-flux [default]
-        //  ifield = 2 - uniform Bz
-        //  ifield = 3 - Bz(1+0.5*sin(kx*x1))
-        //  ifield = 4 - B=(0,B0cos(kx*x1),B0sin(kx*x1)) =
-        //               zero-net flux w/ helicity
-        //  ifield = 5 - uniform By, but only for |z|<2
-        //  ifield = 6 - By with constant beta versus z
-        //  ifield = 7 - zero field everywhere
-        if (MAGNETIC_FIELDS_ENABLED) {
-          if (ifield == 1) {
-            pfield->b.x1f(k,j,i) = 0.0;
-            pfield->b.x2f(k,j,i) = 0.0;
-            pfield->b.x3f(k,j,i) = B0*(std::sin(static_cast<Real>(kx)*x1));
-            if (i==ie) pfield->b.x1f(k,j,ie+1) = 0.0;
-            if (j==je) pfield->b.x2f(k,je+1,i) = 0.0;
-            if (k==ke) pfield->b.x3f(ke+1,j,i) = B0*(std::sin(static_cast<Real>(kx)*x1));
-          }
-          if (ifield == 2) {
-            pfield->b.x1f(k,j,i) = 0.0;
-            pfield->b.x2f(k,j,i) = 0.0;
-            pfield->b.x3f(k,j,i) = B0;
-            if (i==ie) pfield->b.x1f(k,j,ie+1) = 0.0;
-            if (j==je) pfield->b.x2f(k,je+1,i) = 0.0;
-            if (k==ke) pfield->b.x3f(ke+1,j,i) = B0;
-          }
-          if (ifield == 3) {
-            pfield->b.x1f(k,j,i) = 0.0;
-            pfield->b.x2f(k,j,i) = 0.0;
-            pfield->b.x3f(k,j,i) = B0*(1.0+0.5*std::sin(static_cast<Real>(kx)*x1));
-            if (i==ie) pfield->b.x1f(k,j,ie+1) = 0.0;
-            if (j==je) pfield->b.x2f(k,je+1,i) = 0.0;
-            if (k==ke) pfield->b.x3f(ke+1,j,i) = B0*(1.0 + 0.5*
-                                                     std::sin(static_cast<Real>(kx)*x1));
-          }
-          if (ifield == 4) {
-            pfield->b.x1f(k,j,i) = 0.0;
-            pfield->b.x2f(k,j,i) = B0*(std::cos(static_cast<Real>(kx)*x1));
-            pfield->b.x3f(k,j,i) = B0*(std::sin(static_cast<Real>(kx)*x1));
-            if (i==ie) pfield->b.x1f(k,j,ie+1) = 0.0;
-            if (j==je) pfield->b.x2f(k,je+1,i) = B0*(std::cos(static_cast<Real>(kx)*x1));
-            if (k==ke) pfield->b.x3f(ke+1,j,i) = B0*(std::sin(static_cast<Real>(kx)*x1));
-          }
-          if (ifield == 5 && std::abs(x3) < 2.0) {
-            pfield->b.x1f(k,j,i) = 0.0;
-            pfield->b.x2f(k,j,i) = B0;
-            pfield->b.x3f(k,j,i) = 0.0;
-            if (i==ie) pfield->b.x1f(k,j,ie+1) = 0.0;
-            if (j==je) pfield->b.x2f(k,je+1,i) = B0;
-            if (k==ke) pfield->b.x3f(ke+1,j,i) = 0.0;
-          }
-          if (ifield == 6) {
-            // net toroidal field with constant \beta with height
-            pfield->b.x1f(k,j,i) = 0.0;
-            pfield->b.x2f(k,j,i) = std::sqrt(den*std::exp(-x3*x3)*SQR(Omega_0)/beta);
-            pfield->b.x3f(k,j,i) = 0.0;
-            if (i==ie) pfield->b.x1f(k,j,ie+1) = 0.0;
-            if (j==je) pfield->b.x2f(k,je+1,i) = std::sqrt(den*std::exp(-x3*x3)*
-                                                           SQR(Omega_0)/beta);
-            if (k==ke) pfield->b.x3f(ke+1,j,i) = 0.0;
-          }
-          if (ifield == 7) {
-            // zero field everywhere
-            pfield->b.x1f(k,j,i) = 0.0;
-            pfield->b.x2f(k,j,i) = 0.0;
-            pfield->b.x3f(k,j,i) = 0.0;
-            if (i==ie) pfield->b.x1f(k,j,ie+1) = 0.0;
-            if (j==je) pfield->b.x2f(k,je+1,i) = 0.0;
-            if (k==ke) pfield->b.x3f(ke+1,j,i) = 0.0;
-          }
-        } // MHD
       }
     }
   }
@@ -326,6 +247,7 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
 
   if (ipert == 1) {
     if (lid == pmy_mesh->nblocal - 1) {
+
 #ifdef MPI_PARALLEL
       MPI_Allreduce(MPI_IN_PLACE, &SumRd,  1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
       MPI_Allreduce(MPI_IN_PLACE, &SumRvx, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
@@ -386,7 +308,6 @@ void Mesh::UserWorkAfterLoop(ParameterInput *pin) {
   return;
 }
 
-
 void VertGrav(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
@@ -419,6 +340,184 @@ void VertGrav(MeshBlock *pmb, const Real time, const Real dt,
   return;
 }
 
+// Here is a prescription for driving turbulence in real space
+//  according to the methodology of Lim et al. (2024)
+void TurbForce(MeshBlock *pmb, AthenaArray<Real> &cons, Real dt){
+
+  // Start by defining variables we will need
+  Real x1, x2, x3;
+  Real x1_l, x2_l, x3_l, x1_r, x2_r, x3_r;
+  int nx, ny, nz; // number of cells in each direction excluding ghost zones
+  Real amp_force;
+
+  nx = (pmb->ie - pmb->is) + 1 + 2*NGHOST;
+  ny = (pmb->je - pmb->js) + 1 + 2*NGHOST;
+  nz = (pmb->ke - pmb->ks) + 1 + 2*NGHOST;
+
+  // Define the different times within the integration cycle
+  Real time = pmb->pmy_mesh->time;
+  Real dtfullstep = pmb->pmy_mesh->dt;
+  Real dtsubstep = dt;
+  Real qomt,nxt,kxt;
+  long int iseedxx,iseedxy,iseedxz,iseedyx,iseedyy,iseedyz,iseedzx,iseedzy,iseedzz;
+  Real phixx,phixy,phixz,phizx,phizy,phizz;   // Randomly varying phases
+
+  // Set the forcing amplitude -- need to motivate forcing amplitude in our case
+  amp_force = sqrt(5.64*alpha_in*(Lx*Ly))*dt;  // Jeonghoon Lim, May 2022.
+
+  // Define the overall shearing over the course of the simulation run time
+  qomt = qshear*Omega_0*time;
+
+  if (time == 0.0) {
+    nxt = 1.0;
+  } else {
+    nxt = -floor(qomt*ky/kx0)+1.0;
+  }
+
+  kxt=nxt*kx0+qomt*ky;
+
+  // ath_pout(0,"kforce=%d Forcing called at t = %.10f, tdrive = %.10f, mx = %.10f, kxt/ky= %.10f \n",kforce, pGrid->time, tdrive, mx,kxt/ky);
+
+  //Generate seeds resulting in uncorrelated phases in time
+  // Use the cycle number to generate the random seeds
+  int ncycle = pmb->pmy_mesh->ncycle;
+
+  iseedxx = ncycle*1;
+  iseedxy = ncycle*3;
+  iseedxz = ncycle*5;
+  iseedzx = ncycle*9;
+  iseedzy = ncycle*8;
+  iseedzz = ncycle*7;
+
+  phixx = ran2(&iseedxx)*2.*M_PI;
+  phixy = ran2(&iseedxy)*2.*M_PI;
+  phixz = ran2(&iseedxz)*2.*M_PI;
+  phizx = ran2(&iseedzx)*2.*M_PI;
+  phizy = ran2(&iseedzy)*2.*M_PI;
+  phizz = ran2(&iseedzz)*2.*M_PI;
+
+  // Define the cell-faced vector potential
+  // Define the vector potential arrays and allocate memory
+  // Need to include extra cell for face aligned dimension
+  AthenaArray<Real> Axy, Axz, Ayx, Ayz, Azx, Azy;
+  Axy.NewAthenaArray(nz,ny+1,nx);
+  Axz.NewAthenaArray(nz+1,ny,nx);
+  Ayx.NewAthenaArray(nz,ny,nx+1);
+  Ayz.NewAthenaArray(nz+1,ny,nx);
+  Azx.NewAthenaArray(nz,ny,nx+1);
+  Azy.NewAthenaArray(nz,ny+1,nx);
+
+  // Define the velocity forcing
+  Real dv1, dv2, dv3;
+
+  // Loop over the active cells
+  for (int k=pmb->ks; k<=pmb->ke; ++k) {
+    for (int j=pmb->js; j<=pmb->je; ++j) {
+      for (int i=pmb->is; i<=pmb->ie; ++i) {
+
+        // Now extract the cell centered positions
+        x1 = pmb->pcoord->x1v(i);
+        x2 = pmb->pcoord->x2v(j);
+        x3 = pmb->pcoord->x3v(k);
+
+        // Extract the left cell faces for the cube
+        x1_l = pmb->pcoord->x1f(i);
+        x2_l = pmb->pcoord->x2f(j);
+        x3_l = pmb->pcoord->x3f(k);
+
+        // Now define the vector potential at the centred faces
+        //  Notation: Aij => i: i component of the vector potential, i=x,y,z
+        //                   j: shifted along j directon, j=x,y,z */ 
+
+        Axy(k,j,i) = cos(kxt*x1+ky*x1_l+phixx)*cos(kz*x3+phizx); // on y face
+        Axz(k,j,i) = cos(kxt*x1+ky*x2+phixx)*cos(kz*x3_l+phizx); // on z face
+        Ayx(k,j,i) = cos(kxt*x1_l+ky*x2+phixy)*cos(kz*x3+phizy); // on x face
+        Ayz(k,j,i) = cos(kxt*x1+ky*x2+phixy)*cos(kz*x3_l+phizy); // on z face
+        Azx(k,j,i) = cos(kxt*x1_l+ky*x2+phixz)*cos(kz*x3+phizz); // on x face
+        Azy(k,j,i) = cos(kxt*x1+ky*x2_l+phixz)*cos(kz*x3+phizz); // on y face
+
+        if (i==pmb->ie) {
+          x1_r = pmb->pcoord->x1f(i+1);
+          Ayx(k,j,i+1) = cos(kxt*x1_r+ky*x2+phixy)*cos(kz*x3+phizy); // on x face
+          Azx(k,j,i+1) = cos(kxt*x1_r+ky*x2+phixz)*cos(kz*x3+phizz); // on x face
+        }
+        if (j==pmb->je) {
+          x2_r = pmb->pcoord->x2f(j+1);
+          Axy(k,j+1,i) = cos(kxt*x1+ky*x2_r+phixx)*cos(kz*x3+phizx); // on y face
+          Azy(k,j+1,i) = cos(kxt*x1+ky*x2_r+phixz)*cos(kz*x3+phizz); // on y face
+        }
+        if (k==pmb->ke) {
+          x3_r = pmb->pcoord->x3f(k+1);
+          Axz(k+1,j,i) = cos(kxt*x1+ky*x2+phixx)*cos(kz*x3_r+phizx); // on z face
+          Ayz(k+1,j,i) = cos(kxt*x1+ky*x2+phixy)*cos(kz*x3_r+phizy); // on z face
+        }
+
+      }  
+    }
+  } // end i,j,k loops
+
+  // Velocity perturbations from the curl of the vector potential
+  for (int k=pmb->ks; k<=pmb->ke; ++k) {
+      for (int j=pmb->js; j<=pmb->je; ++j) {
+        for (int i=pmb->is; i<=pmb->ie; ++i) {
+
+          dv1 = (amp_force/ky)*( (Azy(k,j+1,i) - Azy(k,j,i))/pmb->pcoord->dx2f(j) -
+                                        (Ayz(k+1,j,i) - Ayz(k,j,i))/pmb->pcoord->dx3f(k) );
+          dv2 = (amp_force/ky)*( (Axz(k+1,j,i) - Axz(k,j,i))/pmb->pcoord->dx3f(k) -
+                                        (Azx(k,j,i+1) - Azx(k,j,i))/pmb->pcoord->dx1f(i) );
+          dv3 = (amp_force/ky)*( (Ayx(k,j,i+1) - Ayx(k,j,i))/pmb->pcoord->dx1f(i) -
+                                        (Axy(k,j+1,i) - Axy(k,j,i))/pmb->pcoord->dx2f(j) );
+
+          // Add the perturbations to the conserved variables
+          cons(IM1,k,j,i) += cons(IDN,k,j,i)*dv1;
+          cons(IM2,k,j,i) += cons(IDN,k,j,i)*dv2;
+          cons(IM3,k,j,i) += cons(IDN,k,j,i)*dv3;
+
+        }
+      }
+    }
+
+  return;
+}
+
+void KickTurbulence(MeshBlock *pmb, const Real time, const Real dt,
+              const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
+              const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
+              AthenaArray<Real> &cons_scalar) {
+
+              Real time1=pmb->pmy_mesh->time;
+              Real dtfullstep =pmb->pmy_mesh->dt;
+              Real time2=time1+dtfullstep;
+              
+              if((time1 <= tdrive) && (tdrive < time2))
+                { 
+                  TurbForce(pmb, cons, dt);
+                }
+
+              if (time1 >= tdrive){
+                  TurbForce(pmb, cons, dt);
+                  tdrive+=dtdrive;
+              }
+                
+  return;
+}
+
+void MySourceTerms(MeshBlock *pmb, const Real time, const Real dt,
+              const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
+              const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
+              AthenaArray<Real> &cons_scalar) {
+
+  // Apply vertical gravity forcing
+  VertGrav(pmb, time, dt, prim, prim_scalar, bcc, cons, cons_scalar);
+
+  //Apply turbulent forcing
+  if (turb) {
+    KickTurbulence(pmb, time, dt, prim, prim_scalar, bcc, cons, cons_scalar);
+  }
+
+  return;
+}
+
 //  Here is the lower z outflow boundary.
 //  The basic idea is that the pressure and density
 //  are exponentially extrapolated in the ghost zones
@@ -433,31 +532,6 @@ void StratOutflowInnerX3(MeshBlock *pmb, Coordinates *pco,
                          AthenaArray<Real> &prim, FaceField &b,
                          Real time, Real dt,
                          int il, int iu, int jl, int ju, int kl, int ku, int ngh) {
-  // Copy field components from last physical zone
-  // zero slope boundary for B field
-  if (MAGNETIC_FIELDS_ENABLED) {
-    for (int k=1; k<=ngh; k++) {
-      for (int j=jl; j<=ju; j++) {
-        for (int i=il; i<=iu+1; i++) {
-          b.x1f(kl-k,j,i) = b.x1f(kl,j,i);
-        }
-      }
-    }
-    for (int k=1; k<=ngh; k++) {
-      for (int j=jl; j<=ju+1; j++) {
-        for (int i=il; i<=iu; i++) {
-          b.x2f(kl-k,j,i) = b.x2f(kl,j,i);
-        }
-      }
-    }
-    for (int k=1; k<=ngh; k++) {
-      for (int j=jl; j<=ju; j++) {
-        for (int i=il; i<=iu; i++) {
-          b.x3f(kl-k,j,i) = b.x3f(kl,j,i);
-        }
-      }
-    }
-  } // MHD
 
   for (int k=1; k<=ngh; k++) {
     for (int j=jl; j<=ju; j++) {
@@ -508,31 +582,7 @@ void StratOutflowOuterX3(MeshBlock *pmb, Coordinates *pco,
                          AthenaArray<Real> &prim,
                          FaceField &b, Real time, Real dt,
                          int il, int iu, int jl, int ju, int kl, int ku, int ngh) {
-  // Copy field components from last physical zone
-  if (MAGNETIC_FIELDS_ENABLED) {
-    for (int k=1; k<=ngh; k++) {
-      for (int j=jl; j<=ju; j++) {
-        for (int i=il; i<=iu+1; i++) {
-          b.x1f(ku+k,j,i) = b.x1f(ku,j,i);
-        }
-      }
-    }
-    for (int k=1; k<=ngh; k++) {
-      for (int j=jl; j<=ju+1; j++) {
-        for (int i=il; i<=iu; i++) {
-          b.x2f(ku+k,j,i) = b.x2f(ku,j,i);
-        }
-      }
-    }
-    for (int k=1; k<=ngh; k++) {
-      for (int j=jl; j<=ju; j++) {
-        for (int i=il; i<=iu; i++) {
-          b.x3f(ku+1+k,j,i) = b.x3f(ku+1,j,i);
-        }
-      }
-    }
-  } // MHD
-
+  
   for (int k=1; k<=ngh; k++) {
     for (int j=jl; j<=ju; j++) {
       for (int i=il; i<=iu; i++) {
@@ -571,26 +621,6 @@ void StratOutflowOuterX3(MeshBlock *pmb, Coordinates *pco,
 
 namespace {
 
-Real HistoryBxBy(MeshBlock *pmb, int iout) {
-  Real bxby = 0;
-  int is = pmb->is, ie = pmb->ie, js = pmb->js, je = pmb->je, ks = pmb->ks, ke = pmb->ke;
-  AthenaArray<Real> &b = pmb->pfield->bcc;
-  AthenaArray<Real> volume; // 1D array of volumes
-  // allocate 1D array for cell volume used in usr def history
-  volume.NewAthenaArray(pmb->ncells1);
-
-  for (int k=ks; k<=ke; k++) {
-    for (int j=js; j<=je; j++) {
-      pmb->pcoord->CellVolume(k,j,pmb->is,pmb->ie,volume);
-      for (int i=is; i<=ie; i++) {
-        bxby -= volume(i)*b(IB1,k,j,i)*b(IB2,k,j,i);
-      }
-    }
-  }
-  return bxby;
-}
-
-
 Real HistorydVxVy(MeshBlock *pmb, int iout) {
   Real dvxvy = 0.0;
   int is = pmb->is, ie = pmb->ie, js = pmb->js, je = pmb->je, ks = pmb->ks, ke = pmb->ke;
@@ -615,4 +645,5 @@ Real HistorydVxVy(MeshBlock *pmb, int iout) {
   }
   return dvxvy;
 }
+
 } // namespace
