@@ -8,7 +8,6 @@
 //!
 //! PURPOSE:  Problem generator for stratified 3D shearing sheet.
 //!
-//! - ipert = 1 - random perturbations to P and V [default, used by HGB]
 //!
 //! Code must be configured using -shear
 //!
@@ -77,6 +76,7 @@ Real HistorydVxVy(MeshBlock *pmb, int iout);
 // Apply a density floor - useful for large |z| regions
 Real dfloor, pfloor;
 Real Omega_0, qshear;
+int strat;
 int turb;
 Real dtdrive, tdrive, alpha_in;
 Real Lx, Ly, Lz,Lmin;
@@ -88,6 +88,9 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
   // shearing sheet parameter
   qshear = pin->GetReal("orbital_advection","qshear");
   Omega_0 = pin->GetReal("orbital_advection","Omega0");
+
+  // read in the stratification parameters
+  strat = pin->GetOrAddInteger("problem","strat", 1);
 
   // read in the forced turbulence parameters
   turb = pin->GetOrAddInteger("problem","turb", 0);
@@ -136,10 +139,8 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
 //  \brief stratified disk problem generator for 3D problems.
 //======================================================================================
 void MeshBlock::ProblemGenerator(ParameterInput *pin) {
-  int ifield, ipert;
-  Real beta, amp, pres;
+  Real pres;
   Real iso_cs=1.0;
-  Real B0 = 0.0;
 
   Real SumRd=0.0, SumRvx=0.0, SumRvy=0.0, SumRvz=0.0;
   Real x1, x3;
@@ -167,9 +168,7 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
   }
 
   // Read problem parameters for initial conditions
-  amp = pin->GetReal("problem","amp");
-  ipert = pin->GetOrAddInteger("problem","ipert", 1);
-
+  
   Real float_min = std::numeric_limits<float>::min();
   dfloor=pin->GetOrAddReal("hydro","dfloor",(1024*(float_min)));
   pfloor=pin->GetOrAddReal("hydro","pfloor",(1024*(float_min)));
@@ -184,44 +183,17 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
     pres = den*SQR(iso_cs);
   }
 
-  // With viscosity and/or resistivity, read eta_Ohm and nu_V
-  // (to be filled in) ???
+  // Initialize fluid quantities 
   for (int k=ks; k<=ke; k++) {
     for (int j=js; j<=je; j++) {
       for (int i=is; i<=ie; i++) {
         x1 = pcoord->x1v(i);
         x3 = pcoord->x3v(k);
 
-        // Initialize perturbations
-        // ipert = 1 - random perturbations to P/d and V
-        // [default, used by HGB]
-        if (ipert == 1) {
-          rval = amp*(ran2(&iseed) - 0.5);
-          rd = den*std::exp(-x3*x3)*(1.0+2.0*rval);
-          if (rd < dfloor) rd = dfloor;
-          SumRd += rd;
-          if (NON_BAROTROPIC_EOS) {
-            rp = pres/den*rd;
-            if (rp < pfloor) rp = pfloor;
-          }
-          rval = amp*(ran2(&iseed) - 0.5);
-          rvx = (0.4/std::sqrt(3.0)) *rval*1e-3;
-          SumRvx += rd*rvx;
-
-          rval = amp*(ran2(&iseed) - 0.5);
-          rvy = (0.4/std::sqrt(3.0)) *rval*1e-3;
-          SumRvy += rd*rvy;
-
-          rval = amp*(ran2(&iseed) - 0.5);
-          rvz = (0.4/std::sqrt(3.0)) *rval*1e-3;
-          SumRvz += rd*rvz;
-          // no perturbations
-        } else {
-          rd = den*std::exp(-x3*x3);
-          rvx = 0;
-          rvy = 0;
-          rvz = 0;
-        }
+        rd = den*std::exp(-x3*x3);
+        rvx = 0;
+        rvy = 0;
+        rvz = 0;
 
         // Initialize d, M, and P.
         // for_the_future: if FARGO do not initialize the bg shear
@@ -242,39 +214,8 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
     }
   }
 
-  // For random perturbations as in HGB, ensure net momentum is zero by
-  // subtracting off mean of perturbations
-
-  if (ipert == 1) {
-    if (lid == pmy_mesh->nblocal - 1) {
-
-#ifdef MPI_PARALLEL
-      MPI_Allreduce(MPI_IN_PLACE, &SumRd,  1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
-      MPI_Allreduce(MPI_IN_PLACE, &SumRvx, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
-      MPI_Allreduce(MPI_IN_PLACE, &SumRvy, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
-      MPI_Allreduce(MPI_IN_PLACE, &SumRvz, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
-#endif
-      std::int64_t cell_num = pmy_mesh->GetTotalCells();
-      SumRvx /= SumRd*cell_num;
-      SumRvy /= SumRd*cell_num;
-      SumRvz /= SumRd*cell_num;
-      for (int b = 0; b < pmy_mesh->nblocal; ++b) {
-        Hydro *ph = pmy_mesh->my_blocks(b)->phydro;
-        for (int k=ks; k<=ke; k++) {
-          for (int j=js; j<=je; j++) {
-            for (int i=is; i<=ie; i++) {
-              ph->u(IM1,k,j,i) -= ph->u(IDN,k,j,i)*SumRvx;
-              ph->u(IM2,k,j,i) -= ph->u(IDN,k,j,i)*SumRvy;
-              ph->u(IM3,k,j,i) -= ph->u(IDN,k,j,i)*SumRvz;
-            }
-          }
-        }
-      }
-    }
-  }
   return;
 }
-
 
 void MeshBlock::UserWorkBeforeOutput(ParameterInput *pin) {
   return;
@@ -363,7 +304,7 @@ void TurbForce(MeshBlock *pmb, AthenaArray<Real> &cons, Real dt){
   Real phixx,phixy,phixz,phizx,phizy,phizz;   // Randomly varying phases
 
   // Set the forcing amplitude -- need to motivate forcing amplitude in our case
-  amp_force = sqrt(5.64*alpha_in*(Lx*Ly))*dt;  // Jeonghoon Lim, May 2022.
+  amp_force = sqrt(5.64*alpha_in*(Lx*Ly))*dt;
 
   // Define the overall shearing over the course of the simulation run time
   qomt = qshear*Omega_0*time;
@@ -517,7 +458,9 @@ void MySourceTerms(MeshBlock *pmb, const Real time, const Real dt,
               AthenaArray<Real> &cons_scalar) {
 
   // Apply vertical gravity forcing
-  VertGrav(pmb, time, dt, prim, prim_scalar, bcc, cons, cons_scalar);
+  if (strat){
+    VertGrav(pmb, time, dt, prim, prim_scalar, bcc, cons, cons_scalar);
+  }
 
   //Apply turbulent forcing
   if (turb) {

@@ -64,9 +64,8 @@ qshear       = 1.5     # shear rate
 Omega0       = 1.0     # angular velocity of the system
 
 <problem>
-ipert        = 1       # 1 for random d,P, 2 for uniform Vx
-amp          = 0.0 
+strat        = 1        # Switch on stratification
 
-turb         = 1        # drive turbulence 0 = off 1 = on 
+turb         = 0        # drive turbulence 0 = off 1 = on 
 dtdrive      = 0.1      # Cadence of the impulsive driving
 alpha_in     = 0.1      # Controls the strength of the turbulence
