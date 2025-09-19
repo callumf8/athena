@@ -21,11 +21,11 @@ dt          = 0.0001           # time increment between outputs
 
 <time>
 cfl_number  = 0.3       # The Courant, Friedrichs, & Lewy (CFL) Number
-nlim        = 1000         # cycle limit
+nlim        = -1         # cycle limit
 tlim        = 31.4      # time limit (300 orbits)
 integrator  = vl2       # time integration algorithm
 xorder      = 2         # order of spatial reconstruction
-ncycle_out  = 1000         # interval for stdout summary info
+ncycle_out  = 1         # interval for stdout summary info
 
 <mesh>
 nx1         = 32         # Number of zones in X1-direction

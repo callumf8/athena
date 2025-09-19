@@ -190,7 +190,10 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
         x1 = pcoord->x1v(i);
         x3 = pcoord->x3v(k);
 
-        rd = den*std::exp(-x3*x3);
+        rd = den;
+        if (strat){
+          rd *= std::exp(-x3*x3/2.0);
+        }
         rvx = 0;
         rvy = 0;
         rvz = 0;
