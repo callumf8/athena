@@ -492,11 +492,20 @@ void KickTurbulence(MeshBlock *pmb, const Real time, const Real dt,
               if((time1 <= tdrive) && (tdrive < time2))
                 { 
                   TurbForce(pmb, cons, dt);
+                  std::cout << "Turbulence driving at t= " << time1 << std::endl;
                 }
 
               if (time1 >= tdrive){
                   TurbForce(pmb, cons, dt);
                   tdrive+=dtdrive;
+              }
+
+              // Issue an error if the driving time is less than the full timestep
+              if (dtdrive < dtfullstep) {
+                std::stringstream msg;
+                msg << "### FATAL ERROR in inc_sbox.cpp KickTurbulence" << std::endl
+                    << "The turbulence driving time interval must be >= the timestepping" << std::endl;
+                ATHENA_ERROR(msg);
               }
                 
   return;

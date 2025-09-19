@@ -21,11 +21,11 @@ dt          = 0.0001           # time increment between outputs
 
 <time>
 cfl_number  = 0.3       # The Courant, Friedrichs, & Lewy (CFL) Number
-nlim        = -1        # cycle limit
+nlim        = 1000         # cycle limit
 tlim        = 31.4      # time limit (300 orbits)
 integrator  = vl2       # time integration algorithm
 xorder      = 2         # order of spatial reconstruction
-ncycle_out  = 1         # interval for stdout summary info
+ncycle_out  = 1000         # interval for stdout summary info
 
 <mesh>
 nx1         = 32         # Number of zones in X1-direction
@@ -49,7 +49,7 @@ ox3_bc      = reflecting      # outer-X3 boundary flag
 num_threads = 1         # maximum number of OMP threads
 
 <meshblock>
-nx1 = 16 
+nx1 = 32 
 nx2 = 32 
 nx3 = 32 
 
@@ -68,5 +68,5 @@ ipert        = 1       # 1 for random d,P, 2 for uniform Vx
 amp          = 0.0 
 
 turb         = 1        # drive turbulence 0 = off 1 = on 
-dtdrive      = 0.1    # Cadence of the impulsive driving
+dtdrive      = 0.1      # Cadence of the impulsive driving
 alpha_in     = 0.1      # Controls the strength of the turbulence
