@@ -26,6 +26,7 @@
 #include <sstream>    // stringstream
 #include <stdexcept>  // runtime_error
 #include <string>     // c_str()
+#include <random>     // mt19937, normal_distribution, uniform_real_distribution
 
 // Athena++ headers
 #include "../athena.hpp"
@@ -48,6 +49,7 @@ void VertGrav(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
               AthenaArray<Real> &cons_scalar);
+void MyRandom(Real *randphase, int nrand, MeshBlock *pmb);
 void TurbForce(MeshBlock *pmb, AthenaArray<Real> &cons, Real dt);
 void KickTurbulence(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
@@ -69,6 +71,7 @@ void StratOutflowOuterX3(MeshBlock *pmb, Coordinates *pco,
                          FaceField &b, Real time, Real dt,
                          int il, int iu, int jl, int ju, int kl, int ku, int ngh);
 
+
 namespace {
 
 Real HistorydVxVy(MeshBlock *pmb, int iout);
@@ -81,6 +84,16 @@ int turb;
 Real dtdrive, tdrive, alpha_in;
 Real Lx, Ly, Lz,Lmin;
 Real kx0, ky, kz;
+
+// Random number generator global variables
+std::mt19937_64 rng_generator;
+std::int64_t rseed;
+std::uniform_real_distribution<Real> udist(0.0,1.0); // uniform in [0,1)
+int stage;
+int mbcount;
+TimeIntegratorTaskList *ptlist;
+Real *randphase = new Real[6]();
+
 } // namespace
 
 //====================================================================================
@@ -107,6 +120,13 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
       kx0 = (2.0*M_PI/L_min);
       ky = (2.0*M_PI/L_min);
       kz = (2.0*M_PI/L_min);
+
+      // Random number generation global variables
+      rseed = 1;
+      rng_generator.seed(rseed);
+      ptlist = new TimeIntegratorTaskList(pin, this);
+      stage = 0;
+      mbcount = 0;
 
   } 
 
@@ -178,8 +198,6 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
     pres  = pin->GetOrAddReal("problem","pres",1.0);
   } else {
     iso_cs = peos->GetIsoSoundSpeed();
-    std::cout << "iso_cs = " << iso_cs << std::endl;
-    std::cout << NON_BAROTROPIC_EOS << std::endl;
     pres = den*SQR(iso_cs);
   }
 
@@ -284,6 +302,41 @@ void VertGrav(MeshBlock *pmb, const Real time, const Real dt,
   return;
 }
 
+// Function which takes an array of global variables which we want to randomize.
+// Care has been taken to ensure that the random numbers are constant
+// over the substeps of the time integrator and over all meshblocks.
+void MyRandom(Real *randphase, int nrand, MeshBlock *pmb){
+  
+  if (Globals::my_rank == 0 && mbcount == 0 && stage == 0){
+
+    for (int n = 0; n < nrand; n++) {
+      randphase[n] = udist(rng_generator)*TWO_PI;
+    }
+  }  
+
+  // Wait until all processes have the random number
+  for (int n = 0; n < nrand; n++) {
+    MPI_Bcast(&randphase[n], 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&randphase[n], 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+  } 
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  if (pmb->gid==0){
+    stage += 1;
+    if (stage == ptlist->nstages){
+      stage = 0;
+    }
+  }
+
+  mbcount += 1;
+  if (Globals::my_rank == 0 && mbcount == pmb->pmy_mesh->nblocal){
+    mbcount = 0;
+  }  
+
+return;
+}
+
+
 // Here is a prescription for driving turbulence in real space
 //  according to the methodology of Lim et al. (2024)
 void TurbForce(MeshBlock *pmb, AthenaArray<Real> &cons, Real dt){
@@ -339,6 +392,19 @@ void TurbForce(MeshBlock *pmb, AthenaArray<Real> &cons, Real dt){
   phizx = ran2(&iseedzx)*2.*M_PI;
   phizy = ran2(&iseedzy)*2.*M_PI;
   phizz = ran2(&iseedzz)*2.*M_PI;
+
+  // Testing a better random number generator
+  MyRandom(randphase, 6, pmb);
+
+  std::cout << "GID: " << pmb->gid << "  random number 1: " << randphase[0] << std::endl;
+  std::cout << "GID: " << pmb->gid << "  random number 2: " << randphase[1] << std::endl;
+  std::cout << "GID: " << pmb->gid << "  random number 3: " << randphase[2] << std::endl;
+  std::cout << "GID: " << pmb->gid << "  random number 4: " << randphase[3] << std::endl;
+  std::cout << "GID: " << pmb->gid << "  random number 5: " << randphase[4] << std::endl;
+  std::cout << "GID: " << pmb->gid << "  random number 6: " << randphase[5] << std::endl;
+
+  // ========================== //
+
 
   // Define the cell-faced vector potential
   // Define the vector potential arrays and allocate memory
@@ -436,7 +502,7 @@ void KickTurbulence(MeshBlock *pmb, const Real time, const Real dt,
               if((time1 <= tdrive) && (tdrive < time2))
                 { 
                   TurbForce(pmb, cons, dt);
-                  std::cout << "Turbulence driving at t= " << time1 << std::endl;
+                  // if (pmb->gid==0){ std::cout << "Turbulence driving at t= " << time1 << std::endl;}
                 }
 
               if (time1 >= tdrive){
@@ -445,12 +511,12 @@ void KickTurbulence(MeshBlock *pmb, const Real time, const Real dt,
               }
 
               // Issue an error if the driving time is less than the full timestep
-              if (dtdrive < dtfullstep) {
-                std::stringstream msg;
-                msg << "### FATAL ERROR in inc_sbox.cpp KickTurbulence" << std::endl
-                    << "The turbulence driving time interval must be >= the timestepping" << std::endl;
-                ATHENA_ERROR(msg);
-              }
+              // if (dtdrive < dtfullstep) {
+              //   std::stringstream msg;
+              //   msg << "### FATAL ERROR in inc_sbox.cpp KickTurbulence" << std::endl
+              //       << "The turbulence driving time interval must be >= the timestepping" << std::endl;
+              //   ATHENA_ERROR(msg);
+              // }
                 
   return;
 }
