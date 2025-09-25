@@ -21,26 +21,26 @@ dt          = 0.0001           # time increment between outputs
 
 <time>
 cfl_number  = 0.3       # The Courant, Friedrichs, & Lewy (CFL) Number
-nlim        = 3         # cycle limit
+nlim        = 2         # cycle limit
 tlim        = 31.4      # time limit (300 orbits)
 integrator  = vl2       # time integration algorithm
 xorder      = 2         # order of spatial reconstruction
 ncycle_out  = 1         # interval for stdout summary info
 
 <mesh>
-nx1         = 32         # Number of zones in X1-direction
+nx1         = 64         # Number of zones in X1-direction
 x1min       = -0.5      # minimum value of X1
 x1max       = 0.5       # maximum value of X1
 ix1_bc      = shear_periodic      # inner-X1 boundary flag
 ox1_bc      = shear_periodic      # outer-X1 boundary flag
 
-nx2         = 32        # Number of zones in X2-direction
+nx2         = 64        # Number of zones in X2-direction
 x2min       = -4.0      # minimum value of X2
 x2max       = 4.0       # maximum value of X2
 ix2_bc      = periodic  # inner-X2 boundary flag
 ox2_bc      = periodic  # outer-X2 boundary flag
 
-nx3         = 32        # Number of zones in X3-direction
+nx3         = 64        # Number of zones in X3-direction
 x3min       = -4.0      # minimum value of X3
 x3max       = 4.0       # maximum value of X3
 ix3_bc      = reflecting      # inner-X3 boundary flag
@@ -49,9 +49,9 @@ ox3_bc      = reflecting      # outer-X3 boundary flag
 num_threads = 1         # maximum number of OMP threads
 
 <meshblock>
-nx1 = 8 
-nx2 = 32 
-nx3 = 32 
+nx1 = 16 
+nx2 = 16 
+nx3 = 16 
 
 <hydro>
 iso_sound_speed = 1.0          # isothermal sound speed
@@ -66,6 +66,6 @@ Omega0       = 1.0     # angular velocity of the system
 <problem>
 strat        = 1        # Switch on stratification
 
-turb         = 1        # drive turbulence 0 = off 1 = on 
+turb         = 2        # drive turbulence 0 = off 1 = source 2 = loop
 dtdrive      = 0.001      # Cadence of the impulsive driving
-alpha_in     = 0.0      # Controls the strength of the turbulence
+alpha_in     = 0.01      # Controls the strength of the turbulence

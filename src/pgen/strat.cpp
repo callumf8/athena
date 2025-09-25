@@ -386,7 +386,6 @@ void Mesh::UserWorkAfterLoop(ParameterInput *pin) {
   return;
 }
 
-
 void VertGrav(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,

@@ -56,6 +56,8 @@ void KickTurbulence(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
               AthenaArray<Real> &cons_scalar);
 
+void KickTurbulenceLoop(Mesh *pm);
+
 void MySourceTerms(MeshBlock *pmb, const Real time, const Real dt,
                    const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
                    const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
@@ -70,7 +72,6 @@ void StratOutflowOuterX3(MeshBlock *pmb, Coordinates *pco,
                          AthenaArray<Real> &a,
                          FaceField &b, Real time, Real dt,
                          int il, int iu, int jl, int ju, int kl, int ku, int ngh);
-
 
 namespace {
 
@@ -92,7 +93,8 @@ std::uniform_real_distribution<Real> udist(0.0,1.0); // uniform in [0,1)
 int stage;
 int mbcount;
 TimeIntegratorTaskList *ptlist;
-Real *randphase = new Real[6]();
+int nrand = 6; // number of random numbers to generate
+Real *randphase = new Real[nrand]();
 
 } // namespace
 
@@ -243,6 +245,9 @@ void MeshBlock::UserWorkBeforeOutput(ParameterInput *pin) {
 }
 
 void MeshBlock::UserWorkInLoop() {
+
+
+
   for (int k=ks; k<=ke; k++) {
     for (int j=js; j<=je; j++) {
       for (int i=is; i<=ie; i++) {
@@ -263,6 +268,17 @@ void MeshBlock::UserWorkInLoop() {
       }
     }
   }
+  return;
+}
+
+void Mesh::UserWorkInLoop() {
+  // Now perform the turbulence kick if needed
+  
+    if (turb == 2) {
+      if (time >= tdrive) {
+        KickTurbulenceLoop(this);
+      }
+    }
   return;
 }
 
@@ -317,7 +333,6 @@ void MyRandom(Real *randphase, int nrand, MeshBlock *pmb){
   // Wait until all processes have the random number
   for (int n = 0; n < nrand; n++) {
     MPI_Bcast(&randphase[n], 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    MPI_Bcast(&randphase[n], 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
   } 
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -335,7 +350,6 @@ void MyRandom(Real *randphase, int nrand, MeshBlock *pmb){
 
 return;
 }
-
 
 // Here is a prescription for driving turbulence in real space
 //  according to the methodology of Lim et al. (2024)
@@ -357,7 +371,7 @@ void TurbForce(MeshBlock *pmb, AthenaArray<Real> &cons, Real dt){
   Real dtsubstep = dt;
   Real qomt,nxt,kxt;
   long int iseedxx,iseedxy,iseedxz,iseedyx,iseedyy,iseedyz,iseedzx,iseedzy,iseedzz;
-  Real phixx,phixy,phixz,phizx,phizy,phizz;   // Randomly varying phases
+  Real phi1x,phi1y,phi1z,phi2x,phi2y,phi2z;   // Randomly varying phases
 
   // Set the forcing amplitude -- need to motivate forcing amplitude in our case
   amp_force = sqrt(5.64*alpha_in*(Lx*Ly))*dt;
@@ -379,29 +393,24 @@ void TurbForce(MeshBlock *pmb, AthenaArray<Real> &cons, Real dt){
   // Use the cycle number to generate the random seeds
   int ncycle = pmb->pmy_mesh->ncycle;
 
-  iseedxx = ncycle*1;
-  iseedxy = ncycle*3;
-  iseedxz = ncycle*5;
-  iseedzx = ncycle*9;
-  iseedzy = ncycle*8;
-  iseedzz = ncycle*7;
+  MyRandom(randphase, nrand, pmb);
 
-  phixx = ran2(&iseedxx)*2.*M_PI;
-  phixy = ran2(&iseedxy)*2.*M_PI;
-  phixz = ran2(&iseedxz)*2.*M_PI;
-  phizx = ran2(&iseedzx)*2.*M_PI;
-  phizy = ran2(&iseedzy)*2.*M_PI;
-  phizz = ran2(&iseedzz)*2.*M_PI;
+  phi1x = randphase[0];
+  phi1y = randphase[1];
+  phi1z = randphase[2];
+  phi2x = randphase[3];
+  phi2y = randphase[4];
+  phi2z = randphase[5];
 
   // Testing a better random number generator
-  MyRandom(randphase, 6, pmb);
+  // MyRandom(randphase, nrand, pmb);
 
-  std::cout << "GID: " << pmb->gid << "  random number 1: " << randphase[0] << std::endl;
-  std::cout << "GID: " << pmb->gid << "  random number 2: " << randphase[1] << std::endl;
-  std::cout << "GID: " << pmb->gid << "  random number 3: " << randphase[2] << std::endl;
-  std::cout << "GID: " << pmb->gid << "  random number 4: " << randphase[3] << std::endl;
-  std::cout << "GID: " << pmb->gid << "  random number 5: " << randphase[4] << std::endl;
-  std::cout << "GID: " << pmb->gid << "  random number 6: " << randphase[5] << std::endl;
+  // std::cout << "GID: " << pmb->gid << "  random number 1: " << randphase[0] << std::endl;
+  // std::cout << "GID: " << pmb->gid << "  random number 2: " << randphase[1] << std::endl;
+  // std::cout << "GID: " << pmb->gid << "  random number 3: " << randphase[2] << std::endl;
+  // std::cout << "GID: " << pmb->gid << "  random number 4: " << randphase[3] << std::endl;
+  // std::cout << "GID: " << pmb->gid << "  random number 5: " << randphase[4] << std::endl;
+  // std::cout << "GID: " << pmb->gid << "  random number 6: " << randphase[5] << std::endl;
 
   // ========================== //
 
@@ -439,27 +448,27 @@ void TurbForce(MeshBlock *pmb, AthenaArray<Real> &cons, Real dt){
         //  Notation: Aij => i: i component of the vector potential, i=x,y,z
         //                   j: shifted along j directon, j=x,y,z */ 
 
-        Axy(k,j,i) = cos(kxt*x1+ky*x1_l+phixx)*cos(kz*x3+phizx); // on y face
-        Axz(k,j,i) = cos(kxt*x1+ky*x2+phixx)*cos(kz*x3_l+phizx); // on z face
-        Ayx(k,j,i) = cos(kxt*x1_l+ky*x2+phixy)*cos(kz*x3+phizy); // on x face
-        Ayz(k,j,i) = cos(kxt*x1+ky*x2+phixy)*cos(kz*x3_l+phizy); // on z face
-        Azx(k,j,i) = cos(kxt*x1_l+ky*x2+phixz)*cos(kz*x3+phizz); // on x face
-        Azy(k,j,i) = cos(kxt*x1+ky*x2_l+phixz)*cos(kz*x3+phizz); // on y face
+        Axy(k,j,i) = cos(kxt*x1+ky*x2_l+phi1x)*cos(kz*x3+phi2x); // on y face
+        Axz(k,j,i) = cos(kxt*x1+ky*x2+phi1x)*cos(kz*x3_l+phi2x); // on z face
+        Ayx(k,j,i) = cos(kxt*x1_l+ky*x2+phi1y)*cos(kz*x3+phi2y); // on x face
+        Ayz(k,j,i) = cos(kxt*x1+ky*x2+phi1y)*cos(kz*x3_l+phi2y); // on z face
+        Azx(k,j,i) = cos(kxt*x1_l+ky*x2+phi1z)*cos(kz*x3+phi2z); // on x face
+        Azy(k,j,i) = cos(kxt*x1+ky*x2_l+phi1z)*cos(kz*x3+phi2z); // on y face
 
         if (i==pmb->ie) {
           x1_r = pmb->pcoord->x1f(i+1);
-          Ayx(k,j,i+1) = cos(kxt*x1_r+ky*x2+phixy)*cos(kz*x3+phizy); // on x face
-          Azx(k,j,i+1) = cos(kxt*x1_r+ky*x2+phixz)*cos(kz*x3+phizz); // on x face
+          Ayx(k,j,i+1) = cos(kxt*x1_r+ky*x2+phi1y)*cos(kz*x3+phi2y); // on x face
+          Azx(k,j,i+1) = cos(kxt*x1_r+ky*x2+phi1z)*cos(kz*x3+phi2z); // on x face
         }
         if (j==pmb->je) {
           x2_r = pmb->pcoord->x2f(j+1);
-          Axy(k,j+1,i) = cos(kxt*x1+ky*x2_r+phixx)*cos(kz*x3+phizx); // on y face
-          Azy(k,j+1,i) = cos(kxt*x1+ky*x2_r+phixz)*cos(kz*x3+phizz); // on y face
+          Axy(k,j+1,i) = cos(kxt*x1+ky*x2_r+phi1x)*cos(kz*x3+phi2x); // on y face
+          Azy(k,j+1,i) = cos(kxt*x1+ky*x2_r+phi1z)*cos(kz*x3+phi2z); // on y face
         }
         if (k==pmb->ke) {
           x3_r = pmb->pcoord->x3f(k+1);
-          Axz(k+1,j,i) = cos(kxt*x1+ky*x2+phixx)*cos(kz*x3_r+phizx); // on z face
-          Ayz(k+1,j,i) = cos(kxt*x1+ky*x2+phixy)*cos(kz*x3_r+phizy); // on z face
+          Axz(k+1,j,i) = cos(kxt*x1+ky*x2+phi1x)*cos(kz*x3_r+phi2x); // on z face
+          Ayz(k+1,j,i) = cos(kxt*x1+ky*x2+phi1y)*cos(kz*x3_r+phi2y); // on z face
         }
 
       }  
@@ -521,6 +530,170 @@ void KickTurbulence(MeshBlock *pmb, const Real time, const Real dt,
   return;
 }
 
+void KickTurbulenceLoop(Mesh *pm){
+
+  // AthenaArray<Real> vel[3];
+  // AthenaArray<Real> dvx, dvy, dvz;
+
+  Real m[4] = {0};
+  Real phi1x, phi1y, phi1z, phi2y, phi2z, phi2x;
+  Real x1, x2, x3;
+  Real dv1, dv2, dv3;
+  Real qomt,nxt,kxt,amp_force;
+  MeshBlock *pmb;
+  int is, ie, js, je, ks, ke;
+  int il, iu, jl, ju, kl, ku;
+
+  // Extract the active cell bounds
+  is = pm->my_blocks(0)->is, ie = pm->my_blocks(0)->ie;
+  js = pm->my_blocks(0)->js, je = pm->my_blocks(0)->je;
+  ks = pm->my_blocks(0)->ks, ke = pm->my_blocks(0)->ke;
+
+  // Set the bounds including ghost zones
+  il= is-NGHOST;
+  iu= ie+NGHOST;
+  jl= js-NGHOST;
+  ju= je+NGHOST;
+  kl= ks-NGHOST;
+  ku= ke+NGHOST;
+
+  // dvx.NewAthenaArray(pm->my_blocks(0)->ncells3,
+  //                     pm->my_blocks(0)->ncells2,
+  //                     pm->my_blocks(0)->ncells1);
+  // dvy.NewAthenaArray(pm->my_blocks(0)->ncells3,
+  //                     pm->my_blocks(0)->ncells2,
+  //                     pm->my_blocks(0)->ncells1);
+  // dvz.NewAthenaArray(pm->my_blocks(0)->ncells3,
+  //                     pm->my_blocks(0)->ncells2,
+  //                     pm->my_blocks(0)->ncells1);
+
+  phi1x = udist(rng_generator)*TWO_PI;
+  phi1y = udist(rng_generator)*TWO_PI;
+  phi1z = udist(rng_generator)*TWO_PI;
+  phi2y = udist(rng_generator)*TWO_PI;
+  phi2z = udist(rng_generator)*TWO_PI;
+  phi2x = udist(rng_generator)*TWO_PI;
+
+  // Now generate some random numbers
+  std::cout << " random number 1 : " << phi1x << std::endl;
+  std::cout << " random number 2 : " << phi1y << std::endl;
+  std::cout << " random number 3 : " << phi1z << std::endl;
+  std::cout << " random number 4 : " << phi2y << std::endl;
+  std::cout << " random number 5 : " << phi2z << std::endl;
+  std::cout << " random number 6 : " << phi2x << std::endl;
+
+  // Define the overall shearing over the course of the simulation run time
+  Real time = pm->time;
+  qomt = qshear*Omega_0*time;
+
+  if (time == 0.0) {
+    nxt = 1.0;
+  } else {
+    nxt = -floor(qomt*ky/kx0)+1.0;
+  }
+
+  kxt=nxt*kx0+qomt*ky;
+
+  // Set the forcing amplitude -- need to motivate forcing amplitude in our case
+  amp_force = sqrt(5.64*alpha_in*(Lx*Ly))*dtdrive;
+
+  // Now loop over the meshblocks and apply the forcing
+
+  for (int bn=0; bn<pm->nblocal; ++bn) {
+      pmb = pm->my_blocks(bn);
+
+      std::cout << "Turbulence driving at t= " << pm->time << " on MeshBlock GID= " << pmb->gid << std::endl;
+
+        // Loop over all cells (inc. ghost zones -- my method should be fine for uniform mesh. Not sure about AMR)
+        for (int k=kl; k<=ku; k++) {
+          for (int j=jl; j<=ju; j++) {
+            for (int i=il; i<=iu; i++) {
+
+              // Now extract the cell centered positions
+              x1 = pmb->pcoord->x1v(i);
+              x2 = pmb->pcoord->x2v(j);
+              x3 = pmb->pcoord->x3v(k);
+
+              // Now set compute the curl of the vector potential
+              Real dAxdy = -ky*sin(kxt*x1+ky*x2+phi1x)*cos(kz*x3+phi2x);
+              Real dAxdz = -kz*cos(kxt*x1+ky*x2+phi1x)*sin(kz*x3+phi2x);
+              Real dAydx = -kxt*sin(kxt*x1+ky*x2+phi1y)*cos(kz*x3+phi2y);
+              Real dAydz = -kz*cos(kxt*x1+ky*x2+phi1y)*sin(kz*x3+phi2y);
+              Real dAzdx = -kxt*sin(kxt*x1+ky*x2+phi1z)*cos(kz*x3+phi2z);
+              Real dAzdy = -ky*cos(kxt*x1+ky*x2+phi1z)*sin(kz*x3+phi2z);
+
+              // dvx(k,j,i) = (amp_force/ky)*(dAzdy - dAydz);
+              // dvy(k,j,i) = (amp_force/ky)*(dAxdz - dAzdx);
+              // dvz(k,j,i) = (amp_force/ky)*(dAydx - dAxdy);
+
+              dv1 = (amp_force/ky)*(dAzdy - dAydz);
+              dv2 = (amp_force/ky)*(dAxdz - dAzdx);
+              dv3 = (amp_force/ky)*(dAydx - dAxdy);
+
+              // Add the perturbations to the primitive variables
+              Real den = pmb->phydro->w(IDN,k,j,i);
+              pmb->phydro->w(IVX,k,j,i) += dv1;
+              pmb->phydro->w(IVY,k,j,i) += dv2;
+              pmb->phydro->w(IVZ,k,j,i) += dv3;
+
+              // If in the active domain, count up the total mass and momentum
+              if ( (i >= is) && (i <= ie) && (j >= js) && (j <= je) && (k >= ks) && (k <= ke) ) {
+                m[0] += den;
+                m[1] += den*dv1;
+                m[2] += den*dv2;
+                m[3] += den*dv3;
+              }
+            }
+          }
+        }
+    }
+
+  #ifdef MPI_PARALLEL
+  int mpierr;
+  // Sum the perturbations over all processors
+  mpierr = MPI_Allreduce(MPI_IN_PLACE, m, 4, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+  if (mpierr) {
+    std::stringstream msg;
+    msg << "[normalize]: MPI_Allreduce error = " << mpierr << std::endl;
+    ATHENA_ERROR(msg);
+  }
+#endif // MPI_PARALLEL
+
+std::cout << " Total density = " << m[0] << std::endl;
+std::cout << " Total momentum perturbation in x = " << m[1] << std::endl;
+std::cout << " Total momentum perturbation in y = " << m[2] << std::endl;
+std::cout << " Total momentum perturbation in z = " << m[3] << std::endl;
+
+// Now correct to remove net momentum injection
+for (int bn=0; bn<pm->nblocal; ++bn) {
+      pmb = pm->my_blocks(bn);
+
+        // Loop over all cells (inc. ghost zones -- my method should be fine for uniform mesh. Not sure about AMR)
+        for (int k=kl; k<=ku; k++) {
+          for (int j=jl; j<=ju; j++) {
+            for (int i=il; i<=iu; i++) {
+
+              // Now extract the cell centered positions
+              // Add the perturbations to the primitive variables
+              Real den = pmb->phydro->w(IDN,k,j,i);
+              pmb->phydro->w(IVX,k,j,i) -= m[1]/m[0];
+              pmb->phydro->w(IVY,k,j,i) -= m[2]/m[0];
+              pmb->phydro->w(IVZ,k,j,i) -= m[3]/m[0];
+
+            }
+          }
+        }
+
+  // Must also update the primitive variables
+  AthenaArray<Real> zeros;
+  zeros.NewAthenaArray(3, pm->my_blocks(bn)->ncells3, pm->my_blocks(bn)->ncells2, pm->my_blocks(bn)->ncells1);
+  pmb->peos->PrimitiveToConserved(pmb->phydro->w, zeros, pmb->phydro->w,pmb->pcoord, il, iu, jl, ju, kl, ku);
+
+  }
+
+return;
+}
+
 void MySourceTerms(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
@@ -532,7 +705,7 @@ void MySourceTerms(MeshBlock *pmb, const Real time, const Real dt,
   }
 
   //Apply turbulent forcing
-  if (turb) {
+  if (turb == 1) {
     KickTurbulence(pmb, time, dt, prim, prim_scalar, bcc, cons, cons_scalar);
   }
 
