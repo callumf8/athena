@@ -57,6 +57,7 @@ void KickTurbulence(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
               AthenaArray<Real> &cons_scalar);
 void KickTurbulenceLoop(Mesh *pm);
+void SynchronizeArrays();
 void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
@@ -91,16 +92,18 @@ int turb;
 Real dtdrive, tdrive, alpha_in, lam_force;
 Real Lx, Ly, Lz,Lmin;
 Real kx0, ky, kz;
-int mx, my, mz;
 int mxmax,mymax,mzmax,Nmodes;
 std::vector<int> mx_list, my_list, mz_list, phase;
-std::vector<double> phase_list;
+std::vector<double> phase_list, t0_list;
+Real turbamp;
 int active_modes;
+int sign;
 
 // Random number generator global variables
 std::mt19937_64 rng_generator;
 std::int64_t rseed;
 std::uniform_real_distribution<Real> udist(0.0,1.0); // uniform in [0,1)
+std::uniform_int_distribution<> idist(0,1); // uniform integer distribution in [0,1]
 int stage;
 int mbcount;
 TimeIntegratorTaskList *ptlist;
@@ -147,7 +150,7 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
         mymax = pin->GetOrAddInteger("problem","mymax",3);
         mzmax = pin->GetOrAddInteger("problem","mzmax",2);
         Nmodes = pin->GetOrAddInteger("problem","Nmodes",10);
-
+        turbamp = pin->GetOrAddReal("problem","turbamp",1e-3);
       }
   } 
 
@@ -702,59 +705,193 @@ void KickTurbulenceLoop(Mesh *pm){
   return;
 }
 
+void SynchronizeArrays(){
+
+    // Make sure all arrays are the correct size across processors
+    if (Globals::my_rank != 0){
+      mx_list.resize(Nmodes);
+      my_list.resize(Nmodes);
+      mz_list.resize(Nmodes);
+      phase_list.resize(Nmodes);
+      t0_list.resize(Nmodes);
+    }
+
+    // Broadcast the mode lists so they are synchronized across all ranks
+    MPI_Bcast(&active_modes, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(mx_list.data(), Nmodes, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(my_list.data(), Nmodes, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(mz_list.data(), Nmodes, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(phase_list.data(), Nmodes, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(t0_list.data(), Nmodes, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Barrier(MPI_COMM_WORLD);
+
+  return;
+}
+
 void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
               AthenaArray<Real> &cons_scalar){
 
+  Real m[4] = {0};
 
-//..................................//
-// Populate full list of active modes
-//.................................//
-if (active_modes < Nmodes){
+  // Adjust the forcing modes on a master block and then synchronize
   if (Globals::my_rank == 0 && mbcount == 0){
-    while (active_modes < Nmodes){
-        
-        std::uniform_int_distribution<> distrib_mx(-mxmax, mxmax);
-        std::uniform_int_distribution<> distrib_my(-mymax, mymax);
-        std::uniform_int_distribution<> distrib_mz(-mzmax, mzmax);
-
-        mx_list.push_back(distrib_mx(rng_generator));
-        my_list.push_back(distrib_my(rng_generator));
-        mz_list.push_back(distrib_mz(rng_generator));
-        phase_list.push_back(udist(rng_generator)*TWO_PI);
-
-        active_modes += 1;
-    }
     
-    std::cout <<"GID "<< pmb->gid << " Active modes = " << active_modes << std::endl; 
-  }
+    //..................................//
+    // Remove modes which have exceeded their lifetime
+    //.................................//
 
-  // Now broadcast the number of active modes to all processors
-  MPI_Bcast(&active_modes, 1, MPI_INT, 0, MPI_COMM_WORLD);
-  MPI_Barrier(MPI_COMM_WORLD);
+    int pos = 0;
+    while (pos < t0_list.size()){
+      Real my = my_list.at(pos);
+      Real tlife = 10*Ly/(std::abs(my)); // Change the characteristic mode lifetime here
+      if ((time-t0_list.at(pos)) > tlife){
+        mx_list.erase(mx_list.begin()+pos);
+        my_list.erase(my_list.begin()+pos);
+        mz_list.erase(mz_list.begin()+pos);
+        phase_list.erase(phase_list.begin()+pos);
+        t0_list.erase(t0_list.begin()+pos);
+        active_modes -= 1;
+        std::cout <<"GID "<< pmb->gid << " Removing mode at " << pos << std::endl;
+      } else {
+        pos += 1;
+      }
+    }// end of mode lifetime removal
 
-  // Make sure all arrays are the correct size across processors
-  if (Globals::my_rank != 0){
-    mx_list.resize(Nmodes);
-    my_list.resize(Nmodes);
-    mz_list.resize(Nmodes);
-    phase_list.resize(Nmodes);
-  }
+    //..................................//
+    // Populate full list of active modes
+    //.................................//
+    if (active_modes < Nmodes){
+      // if (Globals::my_rank == 0 && mbcount == 0){
+      while (active_modes < Nmodes){
+          
+          std::uniform_int_distribution<> distrib_mx(-mxmax, mxmax);
+          std::uniform_int_distribution<> distrib_my(1, mymax);
+          std::uniform_int_distribution<> distrib_mz(-mzmax, mzmax);
 
-  // Broadcast the mode lists so they are synchronized across all ranks
-  MPI_Bcast(mx_list.data(), Nmodes, MPI_INT, 0, MPI_COMM_WORLD);
-  MPI_Bcast(my_list.data(), Nmodes, MPI_INT, 0, MPI_COMM_WORLD);
-  MPI_Bcast(mz_list.data(), Nmodes, MPI_INT, 0, MPI_COMM_WORLD);
-  MPI_Bcast(phase_list.data(), Nmodes, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-  MPI_Barrier(MPI_COMM_WORLD);
+          mx_list.push_back(distrib_mx(rng_generator));
+          sign = idist(rng_generator)*2-1;
+          my_list.push_back(sign*distrib_my(rng_generator));
+          mz_list.push_back(distrib_mz(rng_generator));
+          phase_list.push_back(udist(rng_generator)*TWO_PI);
+          t0_list.push_back(time);
+          active_modes += 1;
+          std::cout <<"GID "<< pmb->gid << " Adding mode at " << active_modes-1 << std::endl;
+      }
+    }//end of mode population
+    
+  } //end of mode vector adjustment on master block
 
-} // End of populating mode list  
+  // Now synchronize the mode lists across all processors
+  SynchronizeArrays();
 
-for (int i=0; i<Nmodes; i++){
-  std::cout <<"GID "<< pmb->gid << " mx_list[Nmodes] = " << mx_list.at(i) << std::endl; 
-}
-  // Increment the meshblock counter so we don't duplicate this 
+// if (Globals::my_rank == 0){
+//     std::cout <<"GID "<< pmb->gid << " MB Count = " << mbcount << std::endl; 
+// }
+//   for (int i=0; i<Nmodes; i++){
+//     std::cout <<"GID "<< pmb->gid << " my_list[Nmodes] = " << my_list.at(i) << std::endl; 
+//   }
+
+  //..................................//
+  // Now implement forcing 
+  //.................................//
+  Real dPhidx,dPhidy,dPhidz;
+  dPhidx = 0.0;
+  dPhidy = 0.0;
+  dPhidz = 0.0;
+
+  for (int mode=0; mode<active_modes; mode++){
+    int mx = mx_list.at(mode);
+    int my = my_list.at(mode);
+    int mz = mz_list.at(mode);
+    Real phase = phase_list.at(mode);
+    Real t0 = t0_list.at(mode);
+
+    kx0 = 2*M_PI*mx/Lx;
+    ky = 2*M_PI*my/Ly;
+    kz = 2*M_PI*mz/Lz;
+
+    Real qomt = qshear*Omega_0*(time-t0);
+    Real kxt = kx0 + qomt*ky;
+    Real tlife = 10*Ly/(std::abs(my)); // Change the characteristic mode lifetime here
+
+    for (int k=pmb->ks; k<=pmb->ke; ++k) {
+      for (int j=pmb->js; j<=pmb->je; ++j) {
+        for (int i=pmb->is; i<=pmb->ie; ++i) {
+
+          Real den = prim(IDN,k,j,i);
+          Real x1 = pmb->pcoord->x1v(i);
+          Real x2 = pmb->pcoord->x2v(j);
+          Real x3 = pmb->pcoord->x3v(k);
+
+          Real mask=1;
+          // if (x1 < -0.4*Lx || x1 > 0.4*Lx){mask=0;}
+          // if (x2 < -0.4*Ly || x2 > 0.4*Ly){mask=0;}
+          // if (x3 < -0.4*Lz || x3 > 0.4*Lz){mask=0;}
+
+          Real Phi_fact = (turbamp/Nmodes)*cos(kxt*x1+ky*x2+kz*x3+phase)*sin(M_PI*(time-t0)/tlife);
+
+          dPhidx += kxt*Phi_fact;
+          dPhidy += ky*Phi_fact;
+          dPhidz += kz*Phi_fact;
+
+          // Now compute the net momentum injection
+          if (mode==0 && mask==1){
+            m[0] += den;
+          }
+          m[1] += den*dPhidx;
+          m[2] += den*dPhidy;
+          m[3] += den*dPhidz;
+
+          if (mask == 1){
+            // Now add to the conserved variables
+            cons(IM1,k,j,i) += dt*den*dPhidx;
+            cons(IM2,k,j,i) += dt*den*dPhidy;
+            cons(IM3,k,j,i) += dt*den*dPhidz;
+          }
+        }
+      }
+    }
+
+  } //end of forcing loop
+
+  MPI_Allreduce(MPI_IN_PLACE, m, 4, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+  // std::cout << " Total density = " << m[0] << std::endl;
+
+  // Correct for net momentum injection
+  for (int k=pmb->ks; k<=pmb->ke; ++k) {
+      for (int j=pmb->js; j<=pmb->je; ++j) {
+        for (int i=pmb->is; i<=pmb->ie; ++i) {
+          Real den = prim(IDN,k,j,i);
+          Real x1 = pmb->pcoord->x1v(i);
+          Real x2 = pmb->pcoord->x2v(j);
+          Real x3 = pmb->pcoord->x3v(k);
+
+          Real mask=1;
+          // if (x1 < -0.4*Lx || x1 > 0.4*Lx){mask=0;}
+          // if (x2 < -0.4*Ly || x2 > 0.4*Ly){mask=0;}
+          // if (x3 < -0.4*Lz || x3 > 0.4*Lz){mask=0;}
+
+          if (mask == 1){
+            cons(IM1,k,j,i) -= dt*den*m[1]/m[0];
+            cons(IM2,k,j,i) -= dt*den*m[2]/m[0];
+            cons(IM3,k,j,i) -= dt*den*m[3]/m[0];
+          // }
+          } else {
+            cons(IM1,k,j,i) = 0.0;
+            cons(IM2,k,j,i) = 0.0;
+            }
+
+          }
+        }
+      }
+  
+
+
+
+
+  // Increment the meshblock counter so we don't duplicate the mode setting 
   // for multiple meshblocks on the same rank
   mbcount += 1;
   if (Globals::my_rank == 0 && mbcount == pmb->pmy_mesh->nblocal){
