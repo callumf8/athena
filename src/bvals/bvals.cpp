@@ -274,67 +274,62 @@ void BoundaryValues::SetupPersistentMPI() {
     // this error needs to be downgraded to a non-fatal warning if the AMR+SMR workaround
     // to the MHD+shear+refinement restriction is employed (#569)--- or remove entirely,
     // hoping that RefinementCondition() does not violate below restrictions
-    if (pmy_mesh_->adaptive) {
-      std::stringstream msg;
-      msg << "### FATAL ERROR in BoundaryValues Class" << std::endl
-          << "shear_periodic boundaries do NOT work with AMR at present." << std::endl;
-      ATHENA_ERROR(msg);
-    } else {
-      for (int upper=0; upper<2; upper++) {
-        if (is_shear[upper]) {
-          LogicalLocation loc;
-          loc.level = pmb->loc.level;
-          loc.lx1   = loc_shear[upper];
-          loc.lx2   = pmb->loc.lx2;
-          for (int64_t lx3=0; lx3<nblx3; lx3++) {
-            loc.lx3   = lx3;
-            MeshBlockTree *mbt = pmy_mesh_->tree.FindMeshBlock(loc);
-            // see discussion #569: hydro+shear with SMR (not AMR) works with x1, x3
-            // refinement but MHD with x3 refinement will NOT work without adjusting
-            // corner E-field flux correction to also take into account adjacent x3 block
-            // emf (currently just averages emf values between inner/outermost x1 MBs)
-            if ((mbt == nullptr || mbt->GetGid() == -1) && MAGNETIC_FIELDS_ENABLED) {
-              std::stringstream msg;
-              msg << "### FATAL ERROR in BoundaryValues Class" << std::endl
-                  << "shear_periodic boundaries do NOT work with MHD"
-                  << "if there is refinment in the x3 direction." << std::endl;
-              ATHENA_ERROR(msg);
-            }
+    
+    for (int upper=0; upper<2; upper++) {
+      if (is_shear[upper]) {
+        LogicalLocation loc;
+        loc.level = pmb->loc.level;
+        loc.lx1   = loc_shear[upper];
+        loc.lx2   = pmb->loc.lx2;
+        for (int64_t lx3=0; lx3<nblx3; lx3++) {
+          loc.lx3   = lx3;
+          MeshBlockTree *mbt = pmy_mesh_->tree.FindMeshBlock(loc);
+          // see discussion #569: hydro+shear with SMR (not AMR) works with x1, x3
+          // refinement but MHD with x3 refinement will NOT work without adjusting
+          // corner E-field flux correction to also take into account adjacent x3 block
+          // emf (currently just averages emf values between inner/outermost x1 MBs)
+          if ((mbt == nullptr || mbt->GetGid() == -1) && MAGNETIC_FIELDS_ENABLED) {
+            std::stringstream msg;
+            msg << "### FATAL ERROR in BoundaryValues Class" << std::endl
+                << "shear_periodic boundaries do NOT work with MHD"
+                << "if there is refinment in the x3 direction." << std::endl;
+            ATHENA_ERROR(msg);
           }
-          loc.lx3   = pmb->loc.lx3;
-          for (int64_t lx2=0; lx2<nblx2; lx2++) {
-            loc.lx2 = lx2;
-            MeshBlockTree *mbt = pmy_mesh_->tree.FindMeshBlock(loc);
-            if (mbt == nullptr || mbt->GetGid() == -1) {
-              std::stringstream msg;
-              msg << "### FATAL ERROR in BoundaryValues Class" << std::endl
-                  << "shear_periodic boundaries do NOT work "
-                  << "if there is refinment in the x2 direction." << std::endl;
-              ATHENA_ERROR(msg);
-            }
-            int gid = mbt->GetGid();
-            shbb_[upper][lx2].gid = gid;
-            shbb_[upper][lx2].lid = gid - nslist[ranklist[gid]];
-            shbb_[upper][lx2].rank = ranklist[gid];
-            shbb_[upper][lx2].level = loclist[gid].level;
-          }
-          loc.lx1 = loc_shear[1-upper];
-          loc.lx2   = pmb->loc.lx2;
+        }
+        loc.lx3   = pmb->loc.lx3;
+        for (int64_t lx2=0; lx2<nblx2; lx2++) {
+          loc.lx2 = lx2;
           MeshBlockTree *mbt = pmy_mesh_->tree.FindMeshBlock(loc);
           if (mbt == nullptr || mbt->GetGid() == -1) {
             std::stringstream msg;
             msg << "### FATAL ERROR in BoundaryValues Class" << std::endl
-                << "shear_periodic boundaries do NOT work if MeshBlocks contacting "
-                << "the shear boundaries are on different levels." << std::endl;
+                << "shear_periodic boundaries do NOT work "
+                << "if there is refinment in the x2 direction." << std::endl;
             ATHENA_ERROR(msg);
           }
+          int gid = mbt->GetGid();
+          shbb_[upper][lx2].gid = gid;
+          shbb_[upper][lx2].lid = gid - nslist[ranklist[gid]];
+          shbb_[upper][lx2].rank = ranklist[gid];
+          shbb_[upper][lx2].level = loclist[gid].level;
+        }
+        loc.lx1 = loc_shear[1-upper];
+        loc.lx2   = pmb->loc.lx2;
+        MeshBlockTree *mbt = pmy_mesh_->tree.FindMeshBlock(loc);
+        if (mbt == nullptr || mbt->GetGid() == -1) {
+          std::stringstream msg;
+          msg << "### FATAL ERROR in BoundaryValues Class" << std::endl
+              << "shear_periodic boundaries do NOT work if MeshBlocks contacting "
+              << "the shear boundaries are on different levels." << std::endl;
+          ATHENA_ERROR(msg);
         }
       }
     }
-    qomL_ = pmb->porb->OrbitalVelocity(pmb->porb,pmy_mesh_->mesh_size.x1min,0,0)
-              - pmb->porb->OrbitalVelocity(pmb->porb,pmy_mesh_->mesh_size.x1max,0,0);
-  }
-  return;
+  
+  qomL_ = pmb->porb->OrbitalVelocity(pmb->porb,pmy_mesh_->mesh_size.x1min,0,0)
+            - pmb->porb->OrbitalVelocity(pmb->porb,pmy_mesh_->mesh_size.x1max,0,0);
+}
+return;
 }
 
 //----------------------------------------------------------------------------------------

@@ -46,6 +46,7 @@
 #endif
 
 // TODO(felker): many unused arguments in these functions: time, iout, ...
+int RefinementCondition(MeshBlock *pmb);
 void VertGrav(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
@@ -89,7 +90,6 @@ int strat;
 
 // Turbulence parameters
 int turb;
-Real dtdrive, tdrive, alpha_in, lam_force;
 Real Lx, Ly, Lz,Lmin;
 Real kx0, ky, kz;
 int mxmax,mymax,mzmax,Nmodes;
@@ -104,9 +104,7 @@ std::mt19937_64 rng_generator;
 std::int64_t rseed;
 std::uniform_real_distribution<Real> udist(0.0,1.0); // uniform in [0,1)
 std::uniform_int_distribution<> idist(0,1); // uniform integer distribution in [0,1]
-int stage;
 int mbcount;
-TimeIntegratorTaskList *ptlist;
 int nrand = 6; // number of random numbers to generate
 Real *randphase = new Real[nrand]();
 
@@ -124,34 +122,41 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
   // read in the forced turbulence parameters
   turb = pin->GetOrAddInteger("problem","turb", 0);
   if (turb) {
-      dtdrive = pin->GetOrAddReal("problem","dtdrive", 0.001);
-      tdrive = dtdrive;
-      alpha_in = pin->GetOrAddReal("problem","alpha_in", 0.1);
-      lam_force = pin->GetOrAddReal("problem","lam_force", 0.2);
   
       Lx = pin->GetReal("mesh","x1max") - pin->GetReal("mesh","x1min");
       Ly = pin->GetReal("mesh","x2max") - pin->GetReal("mesh","x2min");
       Lz = pin->GetReal("mesh","x3max") - pin->GetReal("mesh","x3min"); 
       Real L_min = std::min(Lx, std::min(Ly,Lz));
 
-      kx0 = (2.0*M_PI/lam_force);
-      ky = (2.0*M_PI/lam_force);
-      kz = (2.0*M_PI/lam_force);
-
       // Random number generation global variables
       rseed = 1;
       rng_generator.seed(rseed);
-      ptlist = new TimeIntegratorTaskList(pin, this);
-      stage = 0;
       mbcount = 0;
 
-      if (turb == 3){
-        mxmax = pin->GetOrAddInteger("problem","mxmax",6);
-        mymax = pin->GetOrAddInteger("problem","mymax",3);
-        mzmax = pin->GetOrAddInteger("problem","mzmax",2);
-        Nmodes = pin->GetOrAddInteger("problem","Nmodes",10);
-        turbamp = pin->GetOrAddReal("problem","turbamp",1e-3);
+      mxmax = pin->GetOrAddInteger("problem","mxmax",6);
+      mymax = pin->GetOrAddInteger("problem","mymax",3);
+      mzmax = pin->GetOrAddInteger("problem","mzmax",2);
+      Nmodes = pin->GetOrAddInteger("problem","Nmodes",10);
+      turbamp = pin->GetOrAddReal("problem","turbamp",1e-3);
+
+      // These live on the mesh and are accessible by the individual meshblocks
+      AllocateIntUserMeshDataField(3);
+      iuser_mesh_data[0].NewAthenaArray(1);         // Stores whether there are any dead modes
+      iuser_mesh_data[1].NewAthenaArray(Nmodes,4);  // Stores the [Nmodes][mx,my,mz,active/dead]
+      iuser_mesh_data[2].NewAthenaArray(1);         // Stores the meshblock counter
+
+      // Initialize the iuser_mesh_data
+      iuser_mesh_data[0](0) = 0; // Dead modes at the start
+      for (int n=0; n<Nmodes; n++) {
+        for (int m=0; m<4; m++)
+          // No modes are active at the start
+          iuser_mesh_data[1](n,m) = 0;
       }
+      iuser_mesh_data[2](0) = 0; // meshblock counter
+
+      // Stores the [Nmodes][phase, t0]
+      AllocateRealUserMeshDataField(1);
+      ruser_mesh_data[0].NewAthenaArray(Nmodes,2);
   } 
 
   AllocateUserHistoryOutput(1);
@@ -166,6 +171,11 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
   }
   if (mesh_bcs[BoundaryFace::outer_x3] == GetBoundaryFlag("user")) {
     EnrollUserBoundaryFunction(BoundaryFace::outer_x3, StratOutflowOuterX3);
+  }
+
+  if(adaptive==true){
+    std::cout << "### Refinement is on in problem generator" << std::endl;
+    EnrollUserRefinementCondition(RefinementCondition);
   }
 
   if (!shear_periodic) {
@@ -294,25 +304,37 @@ void MeshBlock::UserWorkInLoop() {
 }
 
 void Mesh::UserWorkInLoop() {
-  // Now perform the turbulence kick if needed
-  
-    if (turb == 2) {
-      if (time >= tdrive) {
-        KickTurbulenceLoop(this);
-        tdrive += dtdrive;
 
-        Real newtime = time+dt;
-        if (newtime >= tdrive){
-          while (newtime >= tdrive){tdrive += dtdrive;}
-        }
+  // // Testing - set all modes to zero
+  // iuser_mesh_data[0](0) = 0;
+  // for (int n=0; n<Nmodes; n++) {
+  //   for (int m=0; m<4; m++){
+  //     // No modes are active at the start
+  //     iuser_mesh_data[1](n,m) = 0;
+  //   }
+  // }
 
-      }
-    }
   return;
 }
 
 void Mesh::UserWorkAfterLoop(ParameterInput *pin) {
   return;
+}
+
+int RefinementCondition(MeshBlock *pmb){
+  
+  for(int i=pmb->is; i<=pmb->ie; i++) {
+    // Extract the x location
+    Real x1 = pmb->pcoord->x1v(i);
+    // Refine after the first cycle only
+    if ((pmb->pmy_mesh->ncycle == 1) && (std::abs(x1) < 0.2*Lx)) {
+      std::cout << "Refining meshblock " << pmb->gid << std::endl;
+      return 1;
+    }
+  }
+  
+  return 0;
+
 }
 
 void VertGrav(MeshBlock *pmb, const Real time, const Real dt,
@@ -347,365 +369,9 @@ void VertGrav(MeshBlock *pmb, const Real time, const Real dt,
   return;
 }
 
-// Function which takes an array of global variables which we want to randomize.
-// Care has been taken to ensure that the random numbers are constant
-// over the substeps of the time integrator and over all meshblocks.
-void MyRandom(Real *randphase, int nrand, MeshBlock *pmb){
-  
-  if (Globals::my_rank == 0 && mbcount == 0 && stage == 0){
-
-    for (int n = 0; n < nrand; n++) {
-      randphase[n] = udist(rng_generator)*TWO_PI;
-    }
-  }  
-
-  // Wait until all processes have the random number
-  for (int n = 0; n < nrand; n++) {
-    MPI_Bcast(&randphase[n], 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-  } 
-  MPI_Barrier(MPI_COMM_WORLD);
-
-  if (pmb->gid==0){
-    stage += 1;
-    if (stage == ptlist->nstages){
-      stage = 0;
-    }
-  }
-
-  mbcount += 1;
-  if (Globals::my_rank == 0 && mbcount == pmb->pmy_mesh->nblocal){
-    mbcount = 0;
-  }  
-
-return;
-}
-
-// Here is a prescription for driving turbulence in real space
-//  according to the methodology of Lim et al. (2024)
-void TurbForce(MeshBlock *pmb, AthenaArray<Real> &cons, Real dt){
-
-  // Start by defining variables we will need
-  Real x1, x2, x3;
-  Real x1_l, x2_l, x3_l, x1_r, x2_r, x3_r;
-  int nx, ny, nz; // number of cells in each direction excluding ghost zones
-  Real amp_force;
-
-  nx = (pmb->ie - pmb->is) + 1 + 2*NGHOST;
-  ny = (pmb->je - pmb->js) + 1 + 2*NGHOST;
-  nz = (pmb->ke - pmb->ks) + 1 + 2*NGHOST;
-
-  // Define the different times within the integration cycle
-  Real time = pmb->pmy_mesh->time;
-  Real dtfullstep = pmb->pmy_mesh->dt;
-  Real dtsubstep = dt;
-  Real qomt,nxt,kxt;
-  long int iseedxx,iseedxy,iseedxz,iseedyx,iseedyy,iseedyz,iseedzx,iseedzy,iseedzz;
-  Real phi1x,phi1y,phi1z,phi2x,phi2y,phi2z;   // Randomly varying phases
-
-  // Set the forcing amplitude -- need to motivate forcing amplitude in our case
-  amp_force = sqrt(5.64*alpha_in*(Lx*Ly)*dt);
-
-  // Define the overall shearing over the course of the simulation run time
-  qomt = qshear*Omega_0*time;
-
-  if (time == 0.0) {
-    nxt = 1.0;
-  } else {
-    nxt = floor(1.0-qomt*ky/kx0)+1.0;
-  }
-
-  kxt=nxt*kx0+qomt*ky;
-
-  // Now generate some random numbers
-  MyRandom(randphase, nrand, pmb);
-
-  phi1x = randphase[0];
-  phi1y = randphase[1];
-  phi1z = randphase[2];
-  phi2x = randphase[3];
-  phi2y = randphase[4];
-  phi2z = randphase[5];
-
-  // Testing a better random number generator
-  // MyRandom(randphase, nrand, pmb);
-
-  // std::cout << "GID: " << pmb->gid << "  random number 1: " << randphase[0] << std::endl;
-  // std::cout << "GID: " << pmb->gid << "  random number 2: " << randphase[1] << std::endl;
-  // std::cout << "GID: " << pmb->gid << "  random number 3: " << randphase[2] << std::endl;
-  // std::cout << "GID: " << pmb->gid << "  random number 4: " << randphase[3] << std::endl;
-  // std::cout << "GID: " << pmb->gid << "  random number 5: " << randphase[4] << std::endl;
-  // std::cout << "GID: " << pmb->gid << "  random number 6: " << randphase[5] << std::endl;
-
-  // ========================== //
-
-
-  // Define the cell-faced vector potential
-  // Define the vector potential arrays and allocate memory
-  // Need to include extra cell for face aligned dimension
-  AthenaArray<Real> Axy, Axz, Ayx, Ayz, Azx, Azy;
-  Axy.NewAthenaArray(nz,ny+1,nx);
-  Axz.NewAthenaArray(nz+1,ny,nx);
-  Ayx.NewAthenaArray(nz,ny,nx+1);
-  Ayz.NewAthenaArray(nz+1,ny,nx);
-  Azx.NewAthenaArray(nz,ny,nx+1);
-  Azy.NewAthenaArray(nz,ny+1,nx);
-
-  // Define the velocity forcing
-  Real dv1, dv2, dv3;
-
-  // Loop over the active cells
-  for (int k=pmb->ks; k<=pmb->ke; ++k) {
-    for (int j=pmb->js; j<=pmb->je; ++j) {
-      for (int i=pmb->is; i<=pmb->ie; ++i) {
-
-        // Now extract the cell centered positions
-        x1 = pmb->pcoord->x1v(i);
-        x2 = pmb->pcoord->x2v(j);
-        x3 = pmb->pcoord->x3v(k);
-
-        // Extract the left cell faces for the cube
-        x1_l = pmb->pcoord->x1f(i);
-        x2_l = pmb->pcoord->x2f(j);
-        x3_l = pmb->pcoord->x3f(k);
-
-        // Now define the vector potential at the centred faces
-        //  Notation: Aij => i: i component of the vector potential, i=x,y,z
-        //                   j: shifted along j directon, j=x,y,z */ 
-
-        Axy(k,j,i) = cos(kxt*x1+ky*x2_l+phi1x)*cos(kz*x3+phi2x); // on y face
-        Axz(k,j,i) = cos(kxt*x1+ky*x2+phi1x)*cos(kz*x3_l+phi2x); // on z face
-        Ayx(k,j,i) = cos(kxt*x1_l+ky*x2+phi1y)*cos(kz*x3+phi2y); // on x face
-        Ayz(k,j,i) = cos(kxt*x1+ky*x2+phi1y)*cos(kz*x3_l+phi2y); // on z face
-        Azx(k,j,i) = cos(kxt*x1_l+ky*x2+phi1z)*cos(kz*x3+phi2z); // on x face
-        Azy(k,j,i) = cos(kxt*x1+ky*x2_l+phi1z)*cos(kz*x3+phi2z); // on y face
-
-        if (i==pmb->ie) {
-          x1_r = pmb->pcoord->x1f(i+1);
-          Ayx(k,j,i+1) = cos(kxt*x1_r+ky*x2+phi1y)*cos(kz*x3+phi2y); // on x face
-          Azx(k,j,i+1) = cos(kxt*x1_r+ky*x2+phi1z)*cos(kz*x3+phi2z); // on x face
-        }
-        if (j==pmb->je) {
-          x2_r = pmb->pcoord->x2f(j+1);
-          Axy(k,j+1,i) = cos(kxt*x1+ky*x2_r+phi1x)*cos(kz*x3+phi2x); // on y face
-          Azy(k,j+1,i) = cos(kxt*x1+ky*x2_r+phi1z)*cos(kz*x3+phi2z); // on y face
-        }
-        if (k==pmb->ke) {
-          x3_r = pmb->pcoord->x3f(k+1);
-          Axz(k+1,j,i) = cos(kxt*x1+ky*x2+phi1x)*cos(kz*x3_r+phi2x); // on z face
-          Ayz(k+1,j,i) = cos(kxt*x1+ky*x2+phi1y)*cos(kz*x3_r+phi2y); // on z face
-        }
-
-      }  
-    }
-  } // end i,j,k loops
-
-  // Velocity perturbations from the curl of the vector potential
-  for (int k=pmb->ks; k<=pmb->ke; ++k) {
-      for (int j=pmb->js; j<=pmb->je; ++j) {
-        for (int i=pmb->is; i<=pmb->ie; ++i) {
-
-          dv1 = (amp_force/ky)*( (Azy(k,j+1,i) - Azy(k,j,i))/pmb->pcoord->dx2f(j) -
-                                        (Ayz(k+1,j,i) - Ayz(k,j,i))/pmb->pcoord->dx3f(k) );
-          dv2 = (amp_force/ky)*( (Axz(k+1,j,i) - Axz(k,j,i))/pmb->pcoord->dx3f(k) -
-                                        (Azx(k,j,i+1) - Azx(k,j,i))/pmb->pcoord->dx1f(i) );
-          dv3 = (amp_force/ky)*( (Ayx(k,j,i+1) - Ayx(k,j,i))/pmb->pcoord->dx1f(i) -
-                                        (Axy(k,j+1,i) - Axy(k,j,i))/pmb->pcoord->dx2f(j) );
-
-          // Add the perturbations to the conserved variables
-          cons(IM1,k,j,i) += cons(IDN,k,j,i)*dv1;
-          cons(IM2,k,j,i) += cons(IDN,k,j,i)*dv2;
-          cons(IM3,k,j,i) += cons(IDN,k,j,i)*dv3;
-
-        }
-      }
-    }
-
-  return;
-}
-
-void KickTurbulence(MeshBlock *pmb, const Real time, const Real dt,
-              const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
-              const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
-              AthenaArray<Real> &cons_scalar) {
-
-              Real time1=pmb->pmy_mesh->time;
-              Real dtfullstep =pmb->pmy_mesh->dt;
-              Real time2=time1+dtfullstep;
-              
-              if((time1 <= tdrive) && (tdrive < time2))
-                { 
-                  TurbForce(pmb, cons, dt);
-                  // if (pmb->gid==0){ std::cout << "Turbulence driving at t= " << time1 << std::endl;}
-                }
-
-              if (time1 >= tdrive){
-                  TurbForce(pmb, cons, dt);
-                  tdrive+=dtdrive;
-              }
-
-              // Issue an error if the driving time is less than the full timestep
-              // if (dtdrive < dtfullstep) {
-              //   std::stringstream msg;
-              //   msg << "### FATAL ERROR in inc_sbox.cpp KickTurbulence" << std::endl
-              //       << "The turbulence driving time interval must be >= the timestepping" << std::endl;
-              //   ATHENA_ERROR(msg);
-              // }
-                
-  return;
-}
-
-void KickTurbulenceLoop(Mesh *pm){
-
-  // AthenaArray<Real> vel[3];
-  // AthenaArray<Real> dvx, dvy, dvz;
-
-  Real m[4] = {0};
-  Real phi1x, phi1y, phi1z, phi2y, phi2z, phi2x;
-  Real x1, x2, x3;
-  Real dv1, dv2, dv3;
-  Real qomt,nxt,kxt,amp_force;
-  MeshBlock *pmb;
-  int is, ie, js, je, ks, ke;
-  int il, iu, jl, ju, kl, ku;
-
-  // Extract the active cell bounds
-  is = pm->my_blocks(0)->is, ie = pm->my_blocks(0)->ie;
-  js = pm->my_blocks(0)->js, je = pm->my_blocks(0)->je;
-  ks = pm->my_blocks(0)->ks, ke = pm->my_blocks(0)->ke;
-
-  // Set the bounds including ghost zones
-  il= is-NGHOST;
-  iu= ie+NGHOST;
-  jl= js-NGHOST;
-  ju= je+NGHOST;
-  kl= ks-NGHOST;
-  ku= ke+NGHOST;
-
-  phi1x = udist(rng_generator)*TWO_PI;
-  phi1y = udist(rng_generator)*TWO_PI;
-  phi1z = udist(rng_generator)*TWO_PI;
-  phi2y = udist(rng_generator)*TWO_PI;
-  phi2z = udist(rng_generator)*TWO_PI;
-  phi2x = udist(rng_generator)*TWO_PI;
-
-  // Now generate some random numbers
-  // std::cout << " random number 1 : " << phi1x << std::endl;
-  // std::cout << " random number 2 : " << phi1y << std::endl;
-  // std::cout << " random number 3 : " << phi1z << std::endl;
-  // std::cout << " random number 4 : " << phi2y << std::endl;
-  // std::cout << " random number 5 : " << phi2z << std::endl;
-  // std::cout << " random number 6 : " << phi2x << std::endl;
-
-  // Define the overall shearing over the course of the simulation run time
-  Real time = pm->time;
-  qomt = qshear*Omega_0*time;
-
-  if (time == 0.0) {
-    nxt = 1.0;
-  } else {
-    nxt = floor(1.0-qomt*ky/kx0)+1.0;
-  }
-
-  kxt=nxt*kx0+qomt*ky;
-
-  // Set the forcing amplitude -- need to motivate forcing amplitude in our case
-  amp_force = sqrt(5.64*alpha_in*(Lx*Ly)*dtdrive);
-
-  // Now loop over the meshblocks and apply the forcing
-
-  for (int bn=0; bn<pm->nblocal; ++bn) {
-      pmb = pm->my_blocks(bn);
-
-      if (pmb->gid==0){
-        std::cout << "Turbulence driving at t= " << pm->time << std::endl;
-      }
-
-        // Loop over all cells (inc. ghost zones -- my method should be fine for uniform mesh. Not sure about AMR)
-        for (int k=kl; k<=ku; k++) {
-          for (int j=jl; j<=ju; j++) {
-            for (int i=il; i<=iu; i++) {
-
-              // Now extract the cell centered positions
-              x1 = pmb->pcoord->x1v(i);
-              x2 = pmb->pcoord->x2v(j);
-              x3 = pmb->pcoord->x3v(k);
-
-              // Now set compute the curl of the vector potential
-              Real dAxdy = -ky*sin(kxt*x1+ky*x2+phi1x)*cos(kz*x3+phi2x);
-              Real dAxdz = -kz*cos(kxt*x1+ky*x2+phi1x)*sin(kz*x3+phi2x);
-              Real dAydx = -kxt*sin(kxt*x1+ky*x2+phi1y)*cos(kz*x3+phi2y);
-              Real dAydz = -kz*cos(kxt*x1+ky*x2+phi1y)*sin(kz*x3+phi2y);
-              Real dAzdx = -kxt*sin(kxt*x1+ky*x2+phi1z)*cos(kz*x3+phi2z);
-              Real dAzdy = -ky*cos(kxt*x1+ky*x2+phi1z)*sin(kz*x3+phi2z);
-
-              dv1 = (amp_force/ky)*(dAzdy - dAydz);
-              dv2 = (amp_force/ky)*(dAxdz - dAzdx);
-              dv3 = (amp_force/ky)*(dAydx - dAxdy);
-
-              // Add the perturbations to the primitive variables
-              Real den = pmb->phydro->w(IDN,k,j,i);
-              pmb->phydro->w(IVX,k,j,i) += dv1;
-              pmb->phydro->w(IVY,k,j,i) += dv2;
-              pmb->phydro->w(IVZ,k,j,i) += dv3;
-
-              // If in the active domain, count up the total mass and momentum
-              if ( (i >= is) && (i <= ie) && (j >= js) && (j <= je) && (k >= ks) && (k <= ke) ) {
-                m[0] += den;
-                m[1] += den*dv1;
-                m[2] += den*dv2;
-                m[3] += den*dv3;
-              }
-            }
-          }
-        }
-    }
-
-  // Sum the perturbations over all processors
-  #ifdef MPI_PARALLEL
-  int mpierr;
-  mpierr = MPI_Allreduce(MPI_IN_PLACE, m, 4, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-  if (mpierr) {
-    std::stringstream msg;
-    msg << "[normalize]: MPI_Allreduce error = " << mpierr << std::endl;
-    ATHENA_ERROR(msg);
-  }
-  #endif // MPI_PARALLEL
-
-  // std::cout << " Total density = " << m[0] << std::endl;
-  // std::cout << " Total momentum perturbation in x = " << m[1] << std::endl;
-  // std::cout << " Total momentum perturbation in y = " << m[2] << std::endl;
-  // std::cout << " Total momentum perturbation in z = " << m[3] << std::endl;
-
-  // Now correct by removing net momentum injection
-  for (int bn=0; bn<pm->nblocal; ++bn) {
-        pmb = pm->my_blocks(bn);
-
-          // Loop over all cells (inc. ghost zones)
-          // Reduces momentum injection to zero over active zones
-          for (int k=kl; k<=ku; k++) {
-            for (int j=jl; j<=ju; j++) {
-              for (int i=il; i<=iu; i++) {
-
-                // Now extract the cell centered positions
-                // Add the perturbations to the primitive variables
-                pmb->phydro->w(IVX,k,j,i) -= m[1]/m[0];
-                pmb->phydro->w(IVY,k,j,i) -= m[2]/m[0];
-                pmb->phydro->w(IVZ,k,j,i) -= m[3]/m[0];
-
-              }
-            }
-          }
-
-    // Must also update the conserved variables
-    AthenaArray<Real> zeros;
-    zeros.NewAthenaArray(3, pm->my_blocks(bn)->ncells3, pm->my_blocks(bn)->ncells2, pm->my_blocks(bn)->ncells1);
-    pmb->peos->PrimitiveToConserved(pmb->phydro->w, zeros, pmb->phydro->u, pmb->pcoord, il, iu, jl, ju, kl, ku);
-    }
-
-  return;
-}
-
 void SynchronizeArrays(){
+
+    std::cout << "Stirring the pot at 1 " << std::endl;
 
     // Make sure all arrays are the correct size across processors
     if (Globals::my_rank != 0){
@@ -716,14 +382,20 @@ void SynchronizeArrays(){
       t0_list.resize(Nmodes);
     }
 
+    std::cout << "Stirring the pot at 2 " << " Rank " << Globals::my_rank << std::endl;
+
     // Broadcast the mode lists so they are synchronized across all ranks
     MPI_Bcast(&active_modes, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    std::cout << "Stirring the pot at 2i " << " Rank " << Globals::my_rank << std::endl;
     MPI_Bcast(mx_list.data(), Nmodes, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(my_list.data(), Nmodes, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(mz_list.data(), Nmodes, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(phase_list.data(), Nmodes, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Bcast(t0_list.data(), Nmodes, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    MPI_Barrier(MPI_COMM_WORLD);
+
+    // MPI_Barrier(MPI_COMM_WORLD);
+
+    std::cout << "Stirring the pot at 3 " << std::endl;
 
   return;
 }
@@ -733,67 +405,72 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
               AthenaArray<Real> &cons_scalar){
 
-  Real m[4] = {0};
-
-  // Adjust the forcing modes on a master block and then synchronize
-  if (Globals::my_rank == 0 && mbcount == 0){
+  if (pmb->gid == 0){
+    std::cout <<"========" << " Time = " << time << std::endl;
+  }
     
-    //..................................//
-    // Remove modes which have exceeded their lifetime
-    //.................................//
+  //..................................//
+  // Remove modes which have exceeded their lifetime
+  //.................................//
 
-    int pos = 0;
-    while (pos < t0_list.size()){
-      Real my = my_list.at(pos);
-      Real tlife = 10*Ly/(std::abs(my)); // Change the characteristic mode lifetime here
-      if ((time-t0_list.at(pos)) > tlife){
-        mx_list.erase(mx_list.begin()+pos);
-        my_list.erase(my_list.begin()+pos);
-        mz_list.erase(mz_list.begin()+pos);
-        phase_list.erase(phase_list.begin()+pos);
-        t0_list.erase(t0_list.begin()+pos);
-        active_modes -= 1;
-        std::cout <<"GID "<< pmb->gid << " Removing mode at " << pos << std::endl;
-      } else {
-        pos += 1;
+  // If on the first meshblock on the mesh rank (no need to repeat work shared on mesh)
+  if (pmb->pmy_mesh->iuser_mesh_data[2](0) == 0){
+    // Loop across the modes and remove dead ones
+    for (int mode = 0; mode<Nmodes; mode++) {
+      
+      // Extract info relevant to mode lifetime
+      Real my = pmb->pmy_mesh->iuser_mesh_data[1](mode,1);
+      // Sompute characteristic mode lifetime
+      Real tlife = 10*Ly/(std::abs(my)); 
+
+      // Check if mode has exceed lifetime
+      Real t0 = pmb->pmy_mesh->ruser_mesh_data[0](mode,1);
+      if ((time-t0) > tlife){
+        // Flag mode as dead
+        pmb->pmy_mesh->iuser_mesh_data[1](mode,3) = 0;
+        // Flag that there are dead modes
+        pmb->pmy_mesh->iuser_mesh_data[0](0) = 0;
+        std::cout <<"GID "<< pmb->gid << " Removing mode at " << mode << std::endl;
       }
-    }// end of mode lifetime removal
+    }
+  }
 
-    //..................................//
-    // Populate full list of active modes
-    //.................................//
-    if (active_modes < Nmodes){
-      // if (Globals::my_rank == 0 && mbcount == 0){
-      while (active_modes < Nmodes){
-          
-          std::uniform_int_distribution<> distrib_mx(-mxmax, mxmax);
-          std::uniform_int_distribution<> distrib_my(1, mymax);
-          std::uniform_int_distribution<> distrib_mz(-mzmax, mzmax);
+  //..................................//
+  // Populate full list of active modes
+  //.................................//
 
-          mx_list.push_back(distrib_mx(rng_generator));
-          sign = idist(rng_generator)*2-1;
-          my_list.push_back(sign*distrib_my(rng_generator));
-          mz_list.push_back(distrib_mz(rng_generator));
-          phase_list.push_back(udist(rng_generator)*TWO_PI);
-          t0_list.push_back(time);
-          active_modes += 1;
-          std::cout <<"GID "<< pmb->gid << " Adding mode at " << active_modes-1 << std::endl;
-      }
-    }//end of mode population
-    
-  } //end of mode vector adjustment on master block
+  // If there are dead modes, repopulate the mode list
+  if (pmb->pmy_mesh->iuser_mesh_data[0](0) == 0){
 
-  // Now synchronize the mode lists across all processors
-  // *** ONLY CALL WHEN NEED BE - NOT EVERY SUBSTEP
-  SynchronizeArrays();
+    // Loop through the full mode list to find the dead modes
+    for (int mode=0; mode<Nmodes; mode++) {
 
-// if (Globals::my_rank == 0){
-//     std::cout <<"GID "<< pmb->gid << " MB Count = " << mbcount << std::endl; 
-// }
-//   for (int i=0; i<Nmodes; i++){
-//     std::cout <<"GID "<< pmb->gid << " my_list[Nmodes] = " << my_list.at(i) << std::endl; 
-//   }
+      // If mode is active then continue
+      if (pmb->pmy_mesh->iuser_mesh_data[1](mode,3) == 1) continue;
 
+      // Otherwise find a new mode
+      
+      // Update the modal numbers
+      std::uniform_int_distribution<> distrib_mx(-mxmax, mxmax);
+      std::uniform_int_distribution<> distrib_my(1, mymax);
+      std::uniform_int_distribution<> distrib_mz(-mzmax, mzmax);
+      pmb->pmy_mesh->iuser_mesh_data[1](mode,0) = distrib_mx(rng_generator);
+      sign = idist(rng_generator)*2-1;
+      pmb->pmy_mesh->iuser_mesh_data[1](mode,1) = sign*distrib_my(rng_generator);
+      pmb->pmy_mesh->iuser_mesh_data[1](mode,2) = distrib_mz(rng_generator);
+
+      // Update the phase and spawn time
+      pmb->pmy_mesh->ruser_mesh_data[0](mode,0) = udist(rng_generator)*TWO_PI;
+      pmb->pmy_mesh->ruser_mesh_data[0](mode,1) = time;
+
+      // Mark mode as active
+      pmb->pmy_mesh->iuser_mesh_data[1](mode,3) = 1; 
+
+    }
+    // Mark that the mode list has been fully populated
+    pmb->pmy_mesh->iuser_mesh_data[0](0) = 1; 
+  }//end of mode population
+  
   //..................................//
   // Now implement forcing 
   //.................................//
@@ -802,12 +479,12 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
   dPhidy = 0.0;
   dPhidz = 0.0;
 
-  for (int mode=0; mode<active_modes; mode++){
-    int mx = mx_list.at(mode);
-    int my = my_list.at(mode);
-    int mz = mz_list.at(mode);
-    Real phase = phase_list.at(mode);
-    Real t0 = t0_list.at(mode);
+  for (int mode=0; mode<Nmodes; mode++){
+    int mx = pmb->pmy_mesh->iuser_mesh_data[1](mode,0);
+    int my = pmb->pmy_mesh->iuser_mesh_data[1](mode,1);
+    int mz = pmb->pmy_mesh->iuser_mesh_data[1](mode,2);
+    Real phase = pmb->pmy_mesh->ruser_mesh_data[0](mode,0);
+    Real t0 = pmb->pmy_mesh->ruser_mesh_data[0](mode,1);
 
     kx0 = 2*M_PI*mx/Lx;
     ky = 2*M_PI*my/Ly;
@@ -826,7 +503,7 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
           Real x2 = pmb->pcoord->x2v(j);
           Real x3 = pmb->pcoord->x3v(k);
 
-          Real mask=1;
+          // Real mask=1;
           // if (x1 < -0.4*Lx || x1 > 0.4*Lx){mask=0;}
           // if (x2 < -0.4*Ly || x2 > 0.4*Ly){mask=0;}
           // if (x3 < -0.4*Lz || x3 > 0.4*Lz){mask=0;}
@@ -837,68 +514,62 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
           dPhidy += ky*Phi_fact;
           dPhidz += kz*Phi_fact;
 
-          // Now compute the net momentum injection
-          if (mode==0 && mask==1){
-            m[0] += den;
-          }
-          m[1] += den*dPhidx;
-          m[2] += den*dPhidy;
-          m[3] += den*dPhidz;
+          // // Now compute the net momentum injection
+          // if (mode==0 && mask==1){
+          //   m[0] += den;
+          // }
+          // m[1] += den*dPhidx;
+          // m[2] += den*dPhidy;
+          // m[3] += den*dPhidz;
 
-          if (mask == 1){
+          // if (mask == 1){
             // Now add to the conserved variables
             cons(IM1,k,j,i) += dt*den*dPhidx;
             cons(IM2,k,j,i) += dt*den*dPhidy;
             cons(IM3,k,j,i) += dt*den*dPhidz;
-          }
+          // }
         }
       }
     }
 
   } //end of forcing loop
 
-  MPI_Allreduce(MPI_IN_PLACE, m, 4, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-  // std::cout << " Total density = " << m[0] << std::endl;
+  // // MPI_Allreduce(MPI_IN_PLACE, m, 4, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+  // // std::cout << " Total density = " << m[0] << std::endl;
 
-  // Correct for net momentum injection
-  for (int k=pmb->ks; k<=pmb->ke; ++k) {
-      for (int j=pmb->js; j<=pmb->je; ++j) {
-        for (int i=pmb->is; i<=pmb->ie; ++i) {
-          Real den = prim(IDN,k,j,i);
-          Real x1 = pmb->pcoord->x1v(i);
-          Real x2 = pmb->pcoord->x2v(j);
-          Real x3 = pmb->pcoord->x3v(k);
+  // // Correct for net momentum injection
+  // for (int k=pmb->ks; k<=pmb->ke; ++k) {
+  //     for (int j=pmb->js; j<=pmb->je; ++j) {
+  //       for (int i=pmb->is; i<=pmb->ie; ++i) {
+  //         Real den = prim(IDN,k,j,i);
+  //         Real x1 = pmb->pcoord->x1v(i);
+  //         Real x2 = pmb->pcoord->x2v(j);
+  //         Real x3 = pmb->pcoord->x3v(k);
 
-          Real mask=1;
-          // if (x1 < -0.4*Lx || x1 > 0.4*Lx){mask=0;}
-          // if (x2 < -0.4*Ly || x2 > 0.4*Ly){mask=0;}
-          // if (x3 < -0.4*Lz || x3 > 0.4*Lz){mask=0;}
+  //         Real mask=1;
+  //         // if (x1 < -0.4*Lx || x1 > 0.4*Lx){mask=0;}
+  //         // if (x2 < -0.4*Ly || x2 > 0.4*Ly){mask=0;}
+  //         // if (x3 < -0.4*Lz || x3 > 0.4*Lz){mask=0;}
 
-          if (mask == 1){
-            cons(IM1,k,j,i) -= dt*den*m[1]/m[0];
-            cons(IM2,k,j,i) -= dt*den*m[2]/m[0];
-            cons(IM3,k,j,i) -= dt*den*m[3]/m[0];
-          // }
-          } else {
-            cons(IM1,k,j,i) = 0.0;
-            cons(IM2,k,j,i) = 0.0;
-            }
+  //         if (mask == 1){
+  //           cons(IM1,k,j,i) -= dt*den*m[1]/m[0];
+  //           cons(IM2,k,j,i) -= dt*den*m[2]/m[0];
+  //           cons(IM3,k,j,i) -= dt*den*m[3]/m[0];
+  //         // }
+  //         } else {
+  //           cons(IM1,k,j,i) = 0.0;
+  //           cons(IM2,k,j,i) = 0.0;
+  //           }
 
-          }
-        }
-      }
-  
+  //         }
+  //       }
+  //     }
 
-
-
-
-  // Increment the meshblock counter so we don't duplicate the mode setting 
-  // for multiple meshblocks on the same rank
-  mbcount += 1;
-  if (Globals::my_rank == 0 && mbcount == pmb->pmy_mesh->nblocal){
-    mbcount = 0;
+  pmb->pmy_mesh->iuser_mesh_data[2](0) += 1; // Increment the meshblock counter on the mesh
+  if (pmb->pmy_mesh->iuser_mesh_data[2](0) == pmb->pmy_mesh->nblocal){
+    pmb->pmy_mesh->iuser_mesh_data[2](0) = 0; // Reset the meshblock counter on the mesh
   }
-
+  
   return;
 }
 
@@ -912,13 +583,8 @@ void MySourceTerms(MeshBlock *pmb, const Real time, const Real dt,
     VertGrav(pmb, time, dt, prim, prim_scalar, bcc, cons, cons_scalar);
   }
 
-  //Apply impulsive turbulent forcing
-  if (turb == 1) {
-    KickTurbulence(pmb, time, dt, prim, prim_scalar, bcc, cons, cons_scalar);
-  }
-
   //Apply continuous turbulent forcing
-  if (turb == 3) {
+  if (turb) {
     StirringThePot(pmb, time, dt, prim, prim_scalar, bcc, cons, cons_scalar);
   }
 
