@@ -27,7 +27,6 @@
 #include <stdexcept>  // runtime_error
 #include <string>     // c_str()
 #include <random>     // mt19937, normal_distribution, uniform_real_distribution
-#include <vector>
 
 // Athena++ headers
 #include "../athena.hpp"
@@ -51,7 +50,6 @@ void VertGrav(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
               AthenaArray<Real> &cons_scalar);
-void MyRandom(Real *randphase, int nrand, MeshBlock *pmb);
 void TurbForce(MeshBlock *pmb, AthenaArray<Real> &cons, Real dt);
 void KickTurbulence(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
@@ -93,20 +91,21 @@ int turb;
 Real Lx, Ly, Lz,Lmin;
 Real kx0, ky, kz;
 int mxmax,mymax,mzmax,Nmodes;
-std::vector<int> mx_list, my_list, mz_list, phase;
-std::vector<double> phase_list, t0_list;
 Real turbamp;
-int active_modes;
 int sign;
+
+// Set up some global indexing variables for the user mesh data
+int ALIVE = 1;
+int DEAD   = 0;
+int IMODE = 0, IDEAD= 1, IMB = 2;
+int JMX = 0, JMY = 1, JMZ = 2, JALIVE = 3;
+int JPH = 0, JT0 = 1;
 
 // Random number generator global variables
 std::mt19937_64 rng_generator;
 std::int64_t rseed;
 std::uniform_real_distribution<Real> udist(0.0,1.0); // uniform in [0,1)
 std::uniform_int_distribution<> idist(0,1); // uniform integer distribution in [0,1]
-int mbcount;
-int nrand = 6; // number of random numbers to generate
-Real *randphase = new Real[nrand]();
 
 } // namespace
 
@@ -131,7 +130,6 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
       // Random number generation global variables
       rseed = 1;
       rng_generator.seed(rseed);
-      mbcount = 0;
 
       mxmax = pin->GetOrAddInteger("problem","mxmax",6);
       mymax = pin->GetOrAddInteger("problem","mymax",3);
@@ -141,22 +139,22 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
 
       // These live on the mesh and are accessible by the individual meshblocks
       AllocateIntUserMeshDataField(3);
-      iuser_mesh_data[0].NewAthenaArray(1);         // Stores whether there are any dead modes
-      iuser_mesh_data[1].NewAthenaArray(Nmodes,4);  // Stores the [Nmodes][mx,my,mz,active/dead]
-      iuser_mesh_data[2].NewAthenaArray(1);         // Stores the meshblock counter
+      iuser_mesh_data[IMODE].NewAthenaArray(Nmodes,4);  // Stores the [Nmodes][mx,my,mz,active/dead]
+      iuser_mesh_data[IDEAD].NewAthenaArray(1);         // Stores whether there are any dead modes
+      iuser_mesh_data[IMB].NewAthenaArray(1);         // Stores the meshblock counter
 
       // Initialize the iuser_mesh_data
-      iuser_mesh_data[0](0) = 0; // Dead modes at the start
+      iuser_mesh_data[IDEAD](0) = DEAD; // Dead modes at the start
       for (int n=0; n<Nmodes; n++) {
         for (int m=0; m<4; m++)
           // No modes are active at the start
-          iuser_mesh_data[1](n,m) = 0;
+          iuser_mesh_data[IMODE](n,m) = 0;
       }
-      iuser_mesh_data[2](0) = 0; // meshblock counter
+      iuser_mesh_data[IMB](0) = 0; // meshblock counter
 
       // Stores the [Nmodes][phase, t0]
       AllocateRealUserMeshDataField(1);
-      ruser_mesh_data[0].NewAthenaArray(Nmodes,2);
+      ruser_mesh_data[IMODE].NewAthenaArray(Nmodes,2);
   } 
 
   AllocateUserHistoryOutput(1);
@@ -369,37 +367,6 @@ void VertGrav(MeshBlock *pmb, const Real time, const Real dt,
   return;
 }
 
-void SynchronizeArrays(){
-
-    std::cout << "Stirring the pot at 1 " << std::endl;
-
-    // Make sure all arrays are the correct size across processors
-    if (Globals::my_rank != 0){
-      mx_list.resize(Nmodes);
-      my_list.resize(Nmodes);
-      mz_list.resize(Nmodes);
-      phase_list.resize(Nmodes);
-      t0_list.resize(Nmodes);
-    }
-
-    std::cout << "Stirring the pot at 2 " << " Rank " << Globals::my_rank << std::endl;
-
-    // Broadcast the mode lists so they are synchronized across all ranks
-    MPI_Bcast(&active_modes, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    std::cout << "Stirring the pot at 2i " << " Rank " << Globals::my_rank << std::endl;
-    MPI_Bcast(mx_list.data(), Nmodes, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(my_list.data(), Nmodes, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(mz_list.data(), Nmodes, MPI_INT, 0, MPI_COMM_WORLD);
-    MPI_Bcast(phase_list.data(), Nmodes, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    MPI_Bcast(t0_list.data(), Nmodes, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-    // MPI_Barrier(MPI_COMM_WORLD);
-
-    std::cout << "Stirring the pot at 3 " << std::endl;
-
-  return;
-}
-
 void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
@@ -414,22 +381,22 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
   //.................................//
 
   // If on the first meshblock on the mesh rank (no need to repeat work shared on mesh)
-  if (pmb->pmy_mesh->iuser_mesh_data[2](0) == 0){
+  if (pmb->pmy_mesh->iuser_mesh_data[IMB](0) == 0){
     // Loop across the modes and remove dead ones
     for (int mode = 0; mode<Nmodes; mode++) {
       
       // Extract info relevant to mode lifetime
-      Real my = pmb->pmy_mesh->iuser_mesh_data[1](mode,1);
+      Real my = pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JMY);
       // Sompute characteristic mode lifetime
       Real tlife = 10*Ly/(std::abs(my)); 
 
       // Check if mode has exceed lifetime
-      Real t0 = pmb->pmy_mesh->ruser_mesh_data[0](mode,1);
+      Real t0 = pmb->pmy_mesh->ruser_mesh_data[IMODE](mode,JT0);
       if ((time-t0) > tlife){
         // Flag mode as dead
-        pmb->pmy_mesh->iuser_mesh_data[1](mode,3) = 0;
+        pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JALIVE) = DEAD;
         // Flag that there are dead modes
-        pmb->pmy_mesh->iuser_mesh_data[0](0) = 0;
+        pmb->pmy_mesh->iuser_mesh_data[IDEAD](0) = DEAD;
         std::cout <<"GID "<< pmb->gid << " Removing mode at " << mode << std::endl;
       }
     }
@@ -440,13 +407,13 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
   //.................................//
 
   // If there are dead modes, repopulate the mode list
-  if (pmb->pmy_mesh->iuser_mesh_data[0](0) == 0){
+  if (pmb->pmy_mesh->iuser_mesh_data[IDEAD](0) == DEAD){
 
     // Loop through the full mode list to find the dead modes
     for (int mode=0; mode<Nmodes; mode++) {
 
       // If mode is active then continue
-      if (pmb->pmy_mesh->iuser_mesh_data[1](mode,3) == 1) continue;
+      if (pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JALIVE) == ALIVE) continue;
 
       // Otherwise find a new mode
       
@@ -454,22 +421,26 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
       std::uniform_int_distribution<> distrib_mx(-mxmax, mxmax);
       std::uniform_int_distribution<> distrib_my(1, mymax);
       std::uniform_int_distribution<> distrib_mz(-mzmax, mzmax);
-      pmb->pmy_mesh->iuser_mesh_data[1](mode,0) = distrib_mx(rng_generator);
+      pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JMX) = distrib_mx(rng_generator);
       sign = idist(rng_generator)*2-1;
-      pmb->pmy_mesh->iuser_mesh_data[1](mode,1) = sign*distrib_my(rng_generator);
-      pmb->pmy_mesh->iuser_mesh_data[1](mode,2) = distrib_mz(rng_generator);
+      pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JMY) = sign*distrib_my(rng_generator);
+      pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JMZ) = distrib_mz(rng_generator);
 
       // Update the phase and spawn time
-      pmb->pmy_mesh->ruser_mesh_data[0](mode,0) = udist(rng_generator)*TWO_PI;
-      pmb->pmy_mesh->ruser_mesh_data[0](mode,1) = time;
+      pmb->pmy_mesh->ruser_mesh_data[IMODE](mode,JPH) = udist(rng_generator)*TWO_PI;
+      pmb->pmy_mesh->ruser_mesh_data[IMODE](mode,JT0) = time;
 
       // Mark mode as active
-      pmb->pmy_mesh->iuser_mesh_data[1](mode,3) = 1; 
+      pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JALIVE) = ALIVE; 
 
     }
     // Mark that the mode list has been fully populated
-    pmb->pmy_mesh->iuser_mesh_data[0](0) = 1; 
+    pmb->pmy_mesh->iuser_mesh_data[IDEAD](0) = ALIVE; 
   }//end of mode population
+
+  for (int n=0; n<Nmodes; n++) {
+    std::cout << "gid " << pmb->gid << " " << pmb->pmy_mesh->iuser_mesh_data[IMODE](n,JMX) << std::endl;
+  }
   
   //..................................//
   // Now implement forcing 
@@ -480,11 +451,11 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
   dPhidz = 0.0;
 
   for (int mode=0; mode<Nmodes; mode++){
-    int mx = pmb->pmy_mesh->iuser_mesh_data[1](mode,0);
-    int my = pmb->pmy_mesh->iuser_mesh_data[1](mode,1);
-    int mz = pmb->pmy_mesh->iuser_mesh_data[1](mode,2);
-    Real phase = pmb->pmy_mesh->ruser_mesh_data[0](mode,0);
-    Real t0 = pmb->pmy_mesh->ruser_mesh_data[0](mode,1);
+    int mx = pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JMX);
+    int my = pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JMY);
+    int mz = pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JMZ);
+    Real phase = pmb->pmy_mesh->ruser_mesh_data[IMODE](mode,JPH);
+    Real t0 = pmb->pmy_mesh->ruser_mesh_data[IMODE](mode,JT0);
 
     kx0 = 2*M_PI*mx/Lx;
     ky = 2*M_PI*my/Ly;
@@ -565,9 +536,9 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
   //       }
   //     }
 
-  pmb->pmy_mesh->iuser_mesh_data[2](0) += 1; // Increment the meshblock counter on the mesh
-  if (pmb->pmy_mesh->iuser_mesh_data[2](0) == pmb->pmy_mesh->nblocal){
-    pmb->pmy_mesh->iuser_mesh_data[2](0) = 0; // Reset the meshblock counter on the mesh
+  pmb->pmy_mesh->iuser_mesh_data[IMB](0) += 1; // Increment the meshblock counter on the mesh
+  if (pmb->pmy_mesh->iuser_mesh_data[IMB](0) == pmb->pmy_mesh->nblocal){
+    pmb->pmy_mesh->iuser_mesh_data[IMB](0) = 0; // Reset the meshblock counter on the mesh
   }
   
   return;
