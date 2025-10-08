@@ -784,6 +784,7 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
   } //end of mode vector adjustment on master block
 
   // Now synchronize the mode lists across all processors
+  // *** ONLY CALL WHEN NEED BE - NOT EVERY SUBSTEP
   SynchronizeArrays();
 
 // if (Globals::my_rank == 0){
@@ -900,7 +901,6 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
 
   return;
 }
-
 
 void MySourceTerms(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
