@@ -9,7 +9,7 @@ problem_id  = turb      # problem ID: basename of output filenames
 <output1>
 file_type   = hdf5             # HDF5 data dump
 variable    = prim             # variables to be output
-dt          = 3.14            # time increment between outputs
+dt          = 0.0314            # time increment between outputs
 
 <output2>
 file_type   = rst              # Restart dump
@@ -21,26 +21,26 @@ dt          = 0.0001           # time increment between outputs
 
 <time>
 cfl_number  = 0.3       # The Courant, Friedrichs, & Lewy (CFL) Number
-nlim        = 3         # cycle limit
-tlim        = 31.4      # time limit (300 orbits)
+nlim        = -1         # cycle limit
+tlim        = 0.314      # time limit (300 orbits)
 integrator  = vl2       # time integration algorithm
 xorder      = 2         # order of spatial reconstruction
 ncycle_out  = 1         # interval for stdout summary info
 
 <mesh>
-nx1         = 64         # Number of zones in X1-direction
-x1min       = -0.2      # minimum value of X1
-x1max       = 0.2       # maximum value of X1
-ix1_bc      = shear_periodic      # inner-X1 boundary flag
-ox1_bc      = shear_periodic      # outer-X1 boundary flag
+nx1         = 8         # Number of zones in X1-direction
+x1min       = -1.0      # minimum value of X1
+x1max       = 1.0       # maximum value of X1
+ix1_bc      = periodic      # inner-X1 boundary flag
+ox1_bc      = periodic      # outer-X1 boundary flag
 
-nx2         = 32        # Number of zones in X2-direction
-x2min       = -0.1      # minimum value of X2
-x2max       = 0.1       # maximum value of X2
+nx2         = 8        # Number of zones in X2-direction
+x2min       = -1.0      # minimum value of X2
+x2max       = 1.0       # maximum value of X2
 ix2_bc      = periodic  # inner-X2 boundary flag
 ox2_bc      = periodic  # outer-X2 boundary flag
 
-nx3         = 32        # Number of zones in X3-direction
+nx3         = 8        # Number of zones in X3-direction
 x3min       = -1.0      # minimum value of X3
 x3max       = 1.0       # maximum value of X3
 ix3_bc      = periodic      # inner-X3 boundary flag
@@ -48,33 +48,36 @@ ox3_bc      = periodic      # outer-X3 boundary flag
 
 num_threads = 1         # maximum number of OMP threads
 
-refinement        = adaptive
-numlevel          = 2
+refinement        = none
+numlevel          = 1
 derefine_count    = 5
 
 <meshblock>
-nx1 = 16 
-nx2 = 32 
-nx3 = 32 
+nx1 = 4
+nx2 = 8 
+nx3 = 8 
 
 <hydro>
 iso_sound_speed = 1.0          # isothermal sound speed
 dfloor          = 1.e-6
 pfloor          = 1e-6
 
-<orbital_advection>
-OAorder      = 0       # 0: w/o OA, 1: w/ OA (1st), 2: w/ OA (2nd)
-qshear       = 1.5     # shear rate
-Omega0       = 1.0     # angular velocity of the system
+#<orbital_advection>
+#OAorder      = 0.0     # 0: w/o OA, 1: w/ OA (1st), 2: w/ OA (2nd)
+#qshear       = 0.0     # shear rate
+#Omega0       = 0.0     # angular velocity of the system
 
 <problem>
-strat        = 1        # Switch on stratification
+strat        = 0        # Switch on stratification
 
-turb         = 3         # drive turbulence (0) = off (1) = source kick (2) = loop kick (3) = source continuous
+turb         = 1         # drive turbulence (0) = off (1) = on
 
 turbamp      = 1e-5      # Set the turbulent amplitude factor
-mxmax        = 6         # Range of modes x
-mymax        = 6         # Range of modes y
-mzmax        = 4         # Range of modes z
-Nmodes       = 4        # The number of modes to have active
+mxmax        = 1         # Range of modes x
+mymax        = 1         # Range of modes y
+mzmax        = 1         # Range of modes z
+Nmodes       = 1         # The number of modes to have active
+
+qshear       = 0.0     # shear rate
+Omega0       = 0.0     # angular velocity of the system
 

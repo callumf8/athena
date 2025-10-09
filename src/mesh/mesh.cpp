@@ -2306,9 +2306,9 @@ void Mesh::OutputCycleDiagnostics() {
   const int ratio_precision = 3;
   if (ncycle_out != 0) {
     if (ncycle % ncycle_out == 0) {
-      std::cout << "cycle=" << ncycle << std::scientific
-                << std::setprecision(dt_precision)
-                << " time=" << time << " dt=" << dt;
+      // std::cout << "cycle=" << ncycle << std::scientific
+      //           << std::setprecision(dt_precision)
+      //           << " time=" << time << " dt=" << dt;
       if (dt_diagnostics != -1) {
         if (STS_ENABLED) {
           if (UserTimeStep_ == nullptr)
@@ -2331,7 +2331,7 @@ void Mesh::OutputCycleDiagnostics() {
                     << std::setprecision(dt_precision);
         }
       } // else (empty): dt_diagnostics = -1 -> provide no additional timestep diagnostics
-      std::cout << std::endl;
+      // std::cout << std::endl;
     }
   }
   return;

@@ -50,13 +50,6 @@ void VertGrav(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
               AthenaArray<Real> &cons_scalar);
-void TurbForce(MeshBlock *pmb, AthenaArray<Real> &cons, Real dt);
-void KickTurbulence(MeshBlock *pmb, const Real time, const Real dt,
-              const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
-              const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
-              AthenaArray<Real> &cons_scalar);
-void KickTurbulenceLoop(Mesh *pm);
-void SynchronizeArrays();
 void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
@@ -89,7 +82,6 @@ int strat;
 // Turbulence parameters
 int turb;
 Real Lx, Ly, Lz,Lmin;
-Real kx0, ky, kz;
 int mxmax,mymax,mzmax,Nmodes;
 Real turbamp;
 int sign;
@@ -112,8 +104,11 @@ std::uniform_int_distribution<> idist(0,1); // uniform integer distribution in [
 //====================================================================================
 void Mesh::InitUserMeshData(ParameterInput *pin) {
   // shearing sheet parameter
-  qshear = pin->GetReal("orbital_advection","qshear");
-  Omega_0 = pin->GetReal("orbital_advection","Omega0");
+  // qshear = pin->GetReal("orbital_advection","qshear");
+  // Omega_0 = pin->GetReal("orbital_advection","Omega0");
+
+  qshear = pin->GetReal("problem","qshear");
+  Omega_0 = pin->GetReal("problem","Omega0");
 
   // read in the stratification parameters
   strat = pin->GetOrAddInteger("problem","strat", 1);
@@ -155,6 +150,10 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
       // Stores the [Nmodes][phase, t0]
       AllocateRealUserMeshDataField(1);
       ruser_mesh_data[IMODE].NewAthenaArray(Nmodes,2);
+      for (int n=0; n<Nmodes; n++) {
+        ruser_mesh_data[IMODE](n,JPH) = 0.0;
+        ruser_mesh_data[IMODE](n,JT0) = 0.0;
+      }
   } 
 
   AllocateUserHistoryOutput(1);
@@ -176,12 +175,12 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
     EnrollUserRefinementCondition(RefinementCondition);
   }
 
-  if (!shear_periodic) {
-    std::stringstream msg;
-    msg << "### FATAL ERROR in inc_sbox.cpp ProblemGenerator" << std::endl
-        << "This problem generator requires shearing box." << std::endl;
-    ATHENA_ERROR(msg);
-  }
+  // if (!shear_periodic) {
+  //   std::stringstream msg;
+  //   msg << "### FATAL ERROR in inc_sbox.cpp ProblemGenerator" << std::endl
+  //       << "This problem generator requires shearing box." << std::endl;
+  //   ATHENA_ERROR(msg);
+  // }
 
   return;
 }
@@ -205,9 +204,6 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
 
   // Initialize boxsize
   Real Lx = pmy_mesh->mesh_size.x1max - pmy_mesh->mesh_size.x1min;
-
-  // Ensure a different initial random seed for each meshblock.
-  std::int64_t iseed = -1 - gid;
 
   // adiabatic gamma
   Real gam = peos->GetGamma();
@@ -371,10 +367,6 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
               AthenaArray<Real> &cons_scalar){
-
-  if (pmb->gid == 0){
-    std::cout <<"========" << " Time = " << time << std::endl;
-  }
     
   //..................................//
   // Remove modes which have exceeded their lifetime
@@ -397,7 +389,7 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
         pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JALIVE) = DEAD;
         // Flag that there are dead modes
         pmb->pmy_mesh->iuser_mesh_data[IDEAD](0) = DEAD;
-        std::cout <<"GID "<< pmb->gid << " Removing mode at " << mode << std::endl;
+        std::cout <<"GID "<< pmb->gid << " Removing mode at " << my << " after t-t0 = " << time-t0 << " at time " << time << std::endl;
       }
     }
   }
@@ -433,14 +425,19 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
       // Mark mode as active
       pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JALIVE) = ALIVE; 
 
+      //Print out the new mode added
+      std::cout <<"GID "<< pmb->gid << " Adding mode M_y " 
+                << pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JMY) << ", "
+                << " at time " << time << std::endl;
+
     }
     // Mark that the mode list has been fully populated
     pmb->pmy_mesh->iuser_mesh_data[IDEAD](0) = ALIVE; 
   }//end of mode population
 
-  for (int n=0; n<Nmodes; n++) {
-    std::cout << "gid " << pmb->gid << " " << pmb->pmy_mesh->iuser_mesh_data[IMODE](n,JMX) << std::endl;
-  }
+  // for (int n=0; n<Nmodes; n++) {
+  //   std::cout << "gid " << pmb->gid << " " << pmb->pmy_mesh->iuser_mesh_data[IMODE](n,JMX) << std::endl;
+  // }
   
   //..................................//
   // Now implement forcing 
@@ -451,19 +448,25 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
   dPhidz = 0.0;
 
   for (int mode=0; mode<Nmodes; mode++){
+    
     int mx = pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JMX);
     int my = pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JMY);
     int mz = pmb->pmy_mesh->iuser_mesh_data[IMODE](mode,JMZ);
     Real phase = pmb->pmy_mesh->ruser_mesh_data[IMODE](mode,JPH);
     Real t0 = pmb->pmy_mesh->ruser_mesh_data[IMODE](mode,JT0);
 
-    kx0 = 2*M_PI*mx/Lx;
-    ky = 2*M_PI*my/Ly;
-    kz = 2*M_PI*mz/Lz;
+    // List the mode output
+    std::cout << "GID " << pmb->gid << " Mode " << mode << " (mx,my,mz) = (" << mx << "," << my << "," << mz << ") phase = " << phase << " t0 = " << t0 << std::endl;
+
+    Real kx0 =2*M_PI*mx/Lx;
+    Real ky = 2*M_PI*my/Ly;
+    Real kz = 2*M_PI*mz/Lz;
 
     Real qomt = qshear*Omega_0*(time-t0);
     Real kxt = kx0 + qomt*ky;
     Real tlife = 10*Ly/(std::abs(my)); // Change the characteristic mode lifetime here
+
+    std::cout << "GID " << pmb->gid << " Mode " << mode << " kx0, ky, kz = " << kx0 << ", " << ky << ", " << kz << std::endl;
 
     for (int k=pmb->ks; k<=pmb->ke; ++k) {
       for (int j=pmb->js; j<=pmb->je; ++j) {
@@ -481,9 +484,9 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
 
           Real Phi_fact = (turbamp/Nmodes)*cos(kxt*x1+ky*x2+kz*x3+phase)*sin(M_PI*(time-t0)/tlife);
 
-          dPhidx += kxt*Phi_fact;
-          dPhidy += ky*Phi_fact;
-          dPhidz += kz*Phi_fact;
+          dPhidx = kxt*Phi_fact;
+          dPhidy = ky*Phi_fact;
+          dPhidz = kz*Phi_fact;
 
           // // Now compute the net momentum injection
           // if (mode==0 && mask==1){
@@ -504,37 +507,6 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
     }
 
   } //end of forcing loop
-
-  // // MPI_Allreduce(MPI_IN_PLACE, m, 4, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-  // // std::cout << " Total density = " << m[0] << std::endl;
-
-  // // Correct for net momentum injection
-  // for (int k=pmb->ks; k<=pmb->ke; ++k) {
-  //     for (int j=pmb->js; j<=pmb->je; ++j) {
-  //       for (int i=pmb->is; i<=pmb->ie; ++i) {
-  //         Real den = prim(IDN,k,j,i);
-  //         Real x1 = pmb->pcoord->x1v(i);
-  //         Real x2 = pmb->pcoord->x2v(j);
-  //         Real x3 = pmb->pcoord->x3v(k);
-
-  //         Real mask=1;
-  //         // if (x1 < -0.4*Lx || x1 > 0.4*Lx){mask=0;}
-  //         // if (x2 < -0.4*Ly || x2 > 0.4*Ly){mask=0;}
-  //         // if (x3 < -0.4*Lz || x3 > 0.4*Lz){mask=0;}
-
-  //         if (mask == 1){
-  //           cons(IM1,k,j,i) -= dt*den*m[1]/m[0];
-  //           cons(IM2,k,j,i) -= dt*den*m[2]/m[0];
-  //           cons(IM3,k,j,i) -= dt*den*m[3]/m[0];
-  //         // }
-  //         } else {
-  //           cons(IM1,k,j,i) = 0.0;
-  //           cons(IM2,k,j,i) = 0.0;
-  //           }
-
-  //         }
-  //       }
-  //     }
 
   pmb->pmy_mesh->iuser_mesh_data[IMB](0) += 1; // Increment the meshblock counter on the mesh
   if (pmb->pmy_mesh->iuser_mesh_data[IMB](0) == pmb->pmy_mesh->nblocal){
