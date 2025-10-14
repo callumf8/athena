@@ -9,7 +9,7 @@ problem_id  = turb      # problem ID: basename of output filenames
 <output1>
 file_type   = hdf5             # HDF5 data dump
 variable    = prim             # variables to be output
-dt          = 0.0314            # time increment between outputs
+dt          = 3.14            # time increment between outputs
 
 <output2>
 file_type   = rst              # Restart dump
@@ -22,25 +22,25 @@ dt          = 0.0001           # time increment between outputs
 <time>
 cfl_number  = 0.3       # The Courant, Friedrichs, & Lewy (CFL) Number
 nlim        = -1         # cycle limit
-tlim        = 0.314      # time limit (300 orbits)
+tlim        = 31.4      # time limit (300 orbits)
 integrator  = vl2       # time integration algorithm
 xorder      = 2         # order of spatial reconstruction
 ncycle_out  = 1         # interval for stdout summary info
 
 <mesh>
-nx1         = 8         # Number of zones in X1-direction
+nx1         = 64         # Number of zones in X1-direction
 x1min       = -1.0      # minimum value of X1
 x1max       = 1.0       # maximum value of X1
 ix1_bc      = periodic      # inner-X1 boundary flag
 ox1_bc      = periodic      # outer-X1 boundary flag
 
-nx2         = 8        # Number of zones in X2-direction
+nx2         = 64        # Number of zones in X2-direction
 x2min       = -1.0      # minimum value of X2
 x2max       = 1.0       # maximum value of X2
 ix2_bc      = periodic  # inner-X2 boundary flag
 ox2_bc      = periodic  # outer-X2 boundary flag
 
-nx3         = 8        # Number of zones in X3-direction
+nx3         = 64        # Number of zones in X3-direction
 x3min       = -1.0      # minimum value of X3
 x3max       = 1.0       # maximum value of X3
 ix3_bc      = periodic      # inner-X3 boundary flag
@@ -53,31 +53,34 @@ numlevel          = 1
 derefine_count    = 5
 
 <meshblock>
-nx1 = 4
-nx2 = 8 
-nx3 = 8 
+nx1 = 16
+nx2 = 16 
+nx3 = 16 
 
 <hydro>
 iso_sound_speed = 1.0          # isothermal sound speed
 dfloor          = 1.e-6
 pfloor          = 1e-6
 
-#<orbital_advection>
-#OAorder      = 0.0     # 0: w/o OA, 1: w/ OA (1st), 2: w/ OA (2nd)
-#qshear       = 0.0     # shear rate
-#Omega0       = 0.0     # angular velocity of the system
+<orbital_advection>
+OAorder      = 0     # 0: w/o OA, 1: w/ OA (1st), 2: w/ OA (2nd)
+qshear       = 0.0     # shear rate
+Omega0       = 0.0     # angular velocity of the system
 
 <problem>
 strat        = 0        # Switch on stratification
 
 turb         = 1         # drive turbulence (0) = off (1) = on
+turbmethod   = 1         # turbmethod (1) source (2) work in loop
 
-turbamp      = 1e-5      # Set the turbulent amplitude factor
-mxmax        = 1         # Range of modes x
-mymax        = 1         # Range of modes y
-mzmax        = 1         # Range of modes z
-Nmodes       = 1         # The number of modes to have active
-
-qshear       = 0.0     # shear rate
-Omega0       = 0.0     # angular velocity of the system
+turbamp      = 1         # Set the turbulent amplitude factor
+mxmin        = 1         
+mxmax        = 4         
+mymin        = 1
+mymax        = 4        
+mzmin        = 1
+mzmax        = 4         
+Nmodes       = 10        # The number of modes to have active
+expo         = 2.0       # spherical k-shell power law
+tcor         = 0.1        # The characteristic mode lifetime (should be suitably longer than the timestep)
 
