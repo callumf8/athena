@@ -70,10 +70,8 @@ Omega0       = 0.0     # angular velocity of the system
 <problem>
 strat        = 0        # Switch on stratification
 
-turb         = 1         # drive turbulence (0) = off (1) = on
-turbmethod   = 1         # turbmethod (1) source (2) work in loop
-
-turbamp      = 1         # Set the turbulent amplitude factor
+inc_turb     = 2        # drive turbulence (0) = off (1) = source (2) = loop
+turbamp      = 1        # Set the turbulent amplitude factor
 mxmin        = 1         
 mxmax        = 4         
 mymin        = 1
@@ -82,5 +80,5 @@ mzmin        = 1
 mzmax        = 4         
 Nmodes       = 10        # The number of modes to have active
 expo         = 2.0       # spherical k-shell power law
-tcor         = 0.1        # The characteristic mode lifetime (should be suitably longer than the timestep)
+tcor         = 0.1       # The characteristic mode lifetime (should be suitably longer than the timestep)
 
