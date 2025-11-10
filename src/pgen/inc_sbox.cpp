@@ -133,7 +133,7 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
   // shearing sheet parameter
   qshear = pin->GetReal("orbital_advection","qshear");
   Omega_0 = pin->GetReal("orbital_advection","Omega0");
-  H = pin->GetReal("hydro","iso_sound_speed");
+  H0 = pin->GetReal("hydro","iso_sound_speed");
 
   // stratification parameters
   strat = pin->GetOrAddInteger("problem","strat", 1);
@@ -285,7 +285,7 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
 
         rd = den;
         if (strat){
-          rd *= std::exp(-x3*x3/(2.0*H*H));
+          rd *= std::exp(-x3*x3/(2.0*H0*H0));
         }
         rvx = 0;
         rvy = 0;
@@ -970,16 +970,16 @@ void StirringTheLoop3(Mesh *pm){
           x3 = pmb->pcoord->x3v(k);
 
           // Now set compute the curl of the vector potential
-          dAxdy = -H*ky*sin(kx*x1+ky*x2+phx1)*cos(kz*x3+phx2);
-          dAxdz = -H*kz*cos(kx*x1+kx*x2+phx1)*sin(kz*x3+phx2);
-          dAydx = -H*kx*sin(kx*x1+ky*x2+phy1)*cos(kz*x3+phy2);
-          dAydz = -H*kz*cos(kx*x1+ky*x2+phy1)*sin(kz*x3+phy2);
-          dAzdx = -H*kx*sin(kx*x1+ky*x2+phz1)*cos(kz*x3+phz2);
-          dAzdy = -H*ky*sin(kx*x1+ky*x2+phz1)*cos(kz*x3+phz2);
+          dAxdy = -H0*ky*sin(kx*x1+ky*x2+phx1)*cos(kz*x3+phx2);
+          dAxdz = -H0*kz*cos(kx*x1+kx*x2+phx1)*sin(kz*x3+phx2);
+          dAydx = -H0*kx*sin(kx*x1+ky*x2+phy1)*cos(kz*x3+phy2);
+          dAydz = -H0*kz*cos(kx*x1+ky*x2+phy1)*sin(kz*x3+phy2);
+          dAzdx = -H0*kx*sin(kx*x1+ky*x2+phz1)*cos(kz*x3+phz2);
+          dAzdy = -H0*ky*sin(kx*x1+ky*x2+phz1)*cos(kz*x3+phz2);
 
-          dv1 = turbamp*H*(dAzdy - dAydz);
-          dv2 = turbamp*H*(dAxdz - dAzdx);
-          dv3 = turbamp*H*(dAydx - dAxdy);
+          dv1 = turbamp*H0*(dAzdy - dAydz);
+          dv2 = turbamp*H0*(dAxdz - dAzdx);
+          dv3 = turbamp*H0*(dAydx - dAxdy);
 
           // Add the perturbations to the primitive variables
           Real den = pmb->phydro->w(IDN,k,j,i);
