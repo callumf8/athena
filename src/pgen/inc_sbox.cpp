@@ -1001,6 +1001,179 @@ void StirringTheLoop3(Mesh *pm){
   return;
 }
 
+void StirringTheLoop2(Mesh *pm){
+
+  Real m[4] = {0};   // cumulative mass and momentum counter
+
+  Real x1, x2, x3,dvol;
+  Real fx,fy,fz,kx,ky,kz;
+  Real den;
+  MeshBlock *pmb;
+  int is, ie, js, je, ks, ke;
+  int il, iu, jl, ju, kl, ku;
+
+  // extract the active cell bounds - same on all AMR refinement levels
+  is = pm->my_blocks(0)->is, ie = pm->my_blocks(0)->ie;
+  js = pm->my_blocks(0)->js, je = pm->my_blocks(0)->je;
+  ks = pm->my_blocks(0)->ks, ke = pm->my_blocks(0)->ke;
+
+  // set the bounds including ghost zones (I think that this structure is preserved with AMR)
+  il= is-NGHOST;
+  iu= ie+NGHOST;
+  jl= js-NGHOST;
+  ju= je+NGHOST;
+  kl= ks-NGHOST;
+  ku= ke+NGHOST;
+
+  //.................................//
+  // Now perform the forcing....
+  //.................................//
+
+  // loop over the meshblocks and apply the forcing
+  for (int bn=0; bn<pm->nblocal; ++bn) {
+    pmb = pm->my_blocks(bn);
+
+    // extract the cell volume - possibly different with refinement
+    dvol = pmb->pcoord->dx1f(is)*pmb->pcoord->dx2f(js)*pmb->pcoord->dx3f(ks); 
+
+    // loop over all cells (inc. ghost zones)
+    for (int k=kl; k<=ku; k++) {
+      for (int j=jl; j<=ju; j++) {
+        for (int i=il; i<=iu; i++) {
+
+          // extract the cell centered positions
+          x1 = pmb->pcoord->x1v(i);
+          x2 = pmb->pcoord->x2v(j);
+          x3 = pmb->pcoord->x3v(k);
+
+          kx = M_PI;
+          ky = M_PI;
+          kz = M_PI;
+
+          fx = +turbamp*(std::sin(kx*x1)*std::cos(ky*x2)*std::cos(kz*x3));
+          fy = -turbamp*(std::cos(kx*x1)*std::sin(ky*x2)*std::cos(kz*x3));
+          fz = +turbamp*std::sin(kz*x3);
+
+          // add the perturbations to the primitive variables
+          den = pmb->phydro->w(IDN,k,j,i);
+          pmb->phydro->w(IVX,k,j,i) += pm->dt*fx;
+          pmb->phydro->w(IVY,k,j,i) += pm->dt*fy;
+          pmb->phydro->w(IVZ,k,j,i) += pm->dt*fz;
+
+        }
+      }
+    }
+
+    // update the conserved variables
+    AthenaArray<Real> zeros;
+    zeros.NewAthenaArray(3, pm->my_blocks(bn)->ncells3, pm->my_blocks(bn)->ncells2, pm->my_blocks(bn)->ncells1);
+    pmb->peos->PrimitiveToConserved(pmb->phydro->w, zeros, pmb->phydro->u, pmb->pcoord, il, iu, jl, ju, kl, ku);
+  
+  }
+
+  return;
+}
+
+void StirringTheLoop3(Mesh *pm){
+
+  Real den;
+  MeshBlock *pmb;
+  int is, ie, js, je, ks, ke;
+  int il, iu, jl, ju, kl, ku;
+
+  Real x1, x2, x3;
+  Real kx, kx0, ky, kz,qomt;
+  Real phx1, phy1, phz1, phx2, phy2, phz2;
+  int nxt;
+  Real dAxdy, dAxdz, dAydx, dAydz, dAzdx, dAzdy;
+  Real dv1, dv2, dv3;
+
+  // extract the active cell bounds - same on all AMR refinement levels
+  is = pm->my_blocks(0)->is, ie = pm->my_blocks(0)->ie;
+  js = pm->my_blocks(0)->js, je = pm->my_blocks(0)->je;
+  ks = pm->my_blocks(0)->ks, ke = pm->my_blocks(0)->ke;
+
+  // set the bounds including ghost zones (I think that this structure is preserved with AMR)
+  il= is-NGHOST;
+  iu= ie+NGHOST;
+  jl= js-NGHOST;
+  ju= je+NGHOST;
+  kl= ks-NGHOST;
+  ku= ke+NGHOST;
+
+  //.................................//
+  // Now perform the forcing....
+  //.................................//
+
+  phx1 = udist(rng_generator)*TWO_PI;
+  phy1 = udist(rng_generator)*TWO_PI;
+  phz1 = udist(rng_generator)*TWO_PI;
+  phx2 = udist(rng_generator)*TWO_PI;
+  phy2 = udist(rng_generator)*TWO_PI;
+  phz2 = udist(rng_generator)*TWO_PI;
+
+  kx0 = (2.0*M_PI/4);
+  ky = (2.0*M_PI/4);
+  kz = (2.0*M_PI/4);
+
+  qomt = qshear*Omega_0*pm->time;
+
+  if (pm->time == 0.0) {
+    nxt = 1.0;
+  } else {
+    nxt = floor(1.0-qomt*ky/kx0)+1.0;
+  }
+
+  kx = kx0*nxt + qomt*ky;
+
+  // std::cout << " nxt = " << nxt << " kx = " << kx << " ky = " << ky << " kz = " << kz << std::endl;
+
+  // loop over the meshblocks and apply the forcing
+  for (int bn=0; bn<pm->nblocal; ++bn) {
+    pmb = pm->my_blocks(bn);
+
+    // loop over all cells (inc. ghost zones)
+    for (int k=kl; k<=ku; k++) {
+      for (int j=jl; j<=ju; j++) {
+        for (int i=il; i<=iu; i++) {
+
+          // extract the cell centered positions
+          x1 = pmb->pcoord->x1v(i);
+          x2 = pmb->pcoord->x2v(j);
+          x3 = pmb->pcoord->x3v(k);
+
+          // Now set compute the curl of the vector potential
+          dAxdy = -ky*sin(kx*x1+ky*x2+phx1)*cos(kz*x3+phx2);
+          dAxdz = -kz*cos(kx*x1+kx*x2+phx1)*sin(kz*x3+phx2);
+          dAydx = -kx*sin(kx*x1+ky*x2+phy1)*cos(kz*x3+phy2);
+          dAydz = -kz*cos(kx*x1+ky*x2+phy1)*sin(kz*x3+phy2);
+          dAzdx = -kx*sin(kx*x1+ky*x2+phz1)*cos(kz*x3+phz2);
+          dAzdy = -ky*sin(kx*x1+ky*x2+phz1)*cos(kz*x3+phz2);
+
+          dv1 = turbamp*(dAzdy - dAydz);
+          dv2 = turbamp*(dAxdz - dAzdx);
+          dv3 = turbamp*(dAydx - dAxdy);
+
+          // Add the perturbations to the primitive variables
+          Real den = pmb->phydro->w(IDN,k,j,i);
+          pmb->phydro->w(IVX,k,j,i) += dv1;
+          pmb->phydro->w(IVY,k,j,i) += dv2;
+          pmb->phydro->w(IVZ,k,j,i) += dv3;
+
+        }
+      }
+    }
+
+    // update the conserved variables
+    AthenaArray<Real> zeros;
+    zeros.NewAthenaArray(3, pm->my_blocks(bn)->ncells3, pm->my_blocks(bn)->ncells2, pm->my_blocks(bn)->ncells1);
+    pmb->peos->PrimitiveToConserved(pmb->phydro->w, zeros, pmb->phydro->u, pmb->pcoord, il, iu, jl, ju, kl, ku);
+  
+  }// end of meshblock loop
+  
+  return;
+}
+
 void MySourceTerms(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,

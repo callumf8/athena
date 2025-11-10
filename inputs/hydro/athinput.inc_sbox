@@ -29,20 +29,35 @@ ncycle_out  = 1         # interval for stdout summary info
 
 <mesh>
 nx1         = 128         # Number of zones in X1-direction
+<<<<<<< HEAD
 x1min       = -0.01        # minimum value of X1
 x1max       = +0.01         # maximum value of X1
+=======
+x1min       = -2.0        # minimum value of X1
+x1max       = 2.0         # maximum value of X1
+>>>>>>> 6f02651f70cad79a8d9c0569754082de9d47e69e
 ix1_bc      = shear_periodic      # inner-X1 boundary flag
 ox1_bc      = shear_periodic      # outer-X1 boundary flag
 
 nx2         = 128        # Number of zones in X2-direction
+<<<<<<< HEAD
 x2min       = -0.01      # minimum value of X2
 x2max       = +0.01      # maximum value of X2
+=======
+x2min       = -2.0      # minimum value of X2
+x2max       = 2.0       # maximum value of X2
+>>>>>>> 6f02651f70cad79a8d9c0569754082de9d47e69e
 ix2_bc      = periodic  # inner-X2 boundary flag
 ox2_bc      = periodic  # outer-X2 boundary flag
 
 nx3         = 128        # Number of zones in X3-direction
+<<<<<<< HEAD
 x3min       = -0.02      # minimum value of X3
 x3max       = +0.02       # maximum value of X3
+=======
+x3min       = -2.0      # minimum value of X3
+x3max       = 2.0       # maximum value of X3
+>>>>>>> 6f02651f70cad79a8d9c0569754082de9d47e69e
 ix3_bc      = periodic      # inner-X3 boundary flag
 ox3_bc      = periodic      # outer-X3 boundary flag
 
