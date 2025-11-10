@@ -50,11 +50,20 @@ void VertGrav(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
               AthenaArray<Real> &cons_scalar);
+
 void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
               AthenaArray<Real> &cons_scalar);
+void StirringThePot2(MeshBlock *pmb, const Real time, const Real dt,
+              const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
+              const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
+              AthenaArray<Real> &cons_scalar);
+
 void StirringTheLoop(Mesh *pm);
+void StirringTheLoop2(Mesh *pm);
+void StirringTheLoop3(Mesh *pm);
+
 void MySourceTerms(MeshBlock *pmb, const Real time, const Real dt,
                    const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
                    const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
@@ -79,14 +88,14 @@ int n_bh;
 
 // apply a density floor - useful for large |z| regions
 Real dfloor, pfloor;
-Real Omega_0, qshear;
+Real Omega_0, qshear, H;
 int strat;
 
 // turbulence parameters
 int inc_turb;
 Real Lx, Ly, Lz,Lmin;
 int mxmin,mxmax,mymin,mymax,mzmin,mzmax,Nmodes;
-Real turbamp,expo, tcor;
+Real turbamp,expo, tcor,solenoidal;
 int sign;
 TimeIntegratorTaskList *ptlist;
 
@@ -99,6 +108,9 @@ int TRB_RM;
 int TRB_IM = 0, IDEAD= 1, IMB = 2;
 int JMX = 0, JMY = 1, JMZ = 2, JALIVE = 3;
 int JPHX = 0, JPHY = 1, JPHZ = 2, JT0 = 3, JAMP = 4;
+
+// *** testing Lim method
+Real tdrive;
 
 // random number generator
 std::mt19937_64 rng_generator;
@@ -121,6 +133,7 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
   // shearing sheet parameter
   qshear = pin->GetReal("orbital_advection","qshear");
   Omega_0 = pin->GetReal("orbital_advection","Omega0");
+  H = pin->GetReal("hydro","iso_sound_speed");
 
   // stratification parameters
   strat = pin->GetOrAddInteger("problem","strat", 1);
@@ -162,6 +175,7 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
     turbamp = pin->GetOrAddReal("problem","turbamp",1e-3);
     expo = pin->GetOrAddReal("problem","expo",2.0);
     tcor = pin->GetOrAddReal("problem","tcor",0.1);
+    solenoidal = pin->GetOrAddReal("problem","solenoidal",1.0);
 
     // initialize the int mesh data arrays
     AllocateIntUserMeshDataField(3);
@@ -185,7 +199,11 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
       ruser_mesh_data[TRB_RM](n,JPHZ) = 0.0;  
       ruser_mesh_data[TRB_RM](n,JT0)  = 0.0;
       ruser_mesh_data[TRB_RM](n,JAMP) = 0.0;
+      ruser_mesh_data[TRB_RM](n,5)    = 0.0;
     }
+
+    // *** test
+    tdrive = tcor;
 
   } //end of inc_turb
 
@@ -213,13 +231,13 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
   return;
 }
 
-//======================================================================================
+//======================================`================================================
 //! \fn void MeshBlock::ProblemGenerator(ParameterInput *pin)
 //  \brief stratified disk problem generator for 3D problems.
 //======================================================================================
 void MeshBlock::ProblemGenerator(ParameterInput *pin) {
   Real pres;
-  Real iso_cs=1.0;
+  Real iso_cs;
 
   Real SumRd=0.0, SumRvx=0.0, SumRvy=0.0, SumRvz=0.0;
   Real x1, x3;
@@ -254,6 +272,7 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
     pres  = pin->GetOrAddReal("problem","pres",1.0);
   } else {
     iso_cs = peos->GetIsoSoundSpeed();
+    std:: cout << "### Using isothermal sound speed cs = " << iso_cs << std::endl;
     pres = den*SQR(iso_cs);
   }
 
@@ -266,7 +285,7 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
 
         rd = den;
         if (strat){
-          rd *= std::exp(-x3*x3/2.0);
+          rd *= std::exp(-x3*x3/(2.0*H*H));
         }
         rvx = 0;
         rvy = 0;
@@ -300,8 +319,6 @@ void MeshBlock::UserWorkBeforeOutput(ParameterInput *pin) {
 
 void MeshBlock::UserWorkInLoop() {
 
-
-
   for (int k=ks; k<=ke; k++) {
     for (int j=js; j<=je; j++) {
       for (int i=is; i<=ie; i++) {
@@ -329,6 +346,16 @@ void Mesh::UserWorkInLoop() {
 
   // Now perform the turbulence update at the end of each tiemstep if needed
   if (inc_turb == 2) StirringTheLoop(this);
+
+  if (inc_turb == 22) StirringTheLoop2(this);
+
+  if (inc_turb == 23) {
+    if (time >= tdrive) {
+      StirringTheLoop3(this);
+      tdrive += tcor;
+      
+    }
+  }
 
   return;
 }
@@ -364,7 +391,7 @@ void VertGrav(MeshBlock *pmb, const Real time, const Real dt,
   Real fsmooth, xi, sign;
   Real Lz = pmb->pmy_mesh->mesh_size.x3max - pmb->pmy_mesh->mesh_size.x3min;
   Real z0 = Lz/2.0;
-  Real lambda = 0.1 / z0;
+  Real lambda = 0.1*H/z0;
   for (int k=pmb->ks; k<=pmb->ke; ++k) {
     for (int j=pmb->js; j<=pmb->je; ++j) {
       for (int i=pmb->is; i<=pmb->ie; ++i) {
@@ -536,6 +563,51 @@ void StirringThePot(MeshBlock *pmb, const Real time, const Real dt,
   return;
 }
 
+void StirringThePot2(MeshBlock *pmb, const Real time, const Real dt,
+              const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
+              const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
+              AthenaArray<Real> &cons_scalar){
+
+  Real x1, x2, x3,dvol;
+  Real mx,my,mz,mmag,phasex,phasey,phasez,amp;
+  Real fx,fy,fz,kx,ky,kz,kamp,Ax,Ay,Az,tlife,t0,qomt;
+  Real den;
+  
+  //..................................//
+  // Now implement forcing 
+  //.................................//
+
+
+    kx = M_PI;
+    ky = M_PI;
+    kz = M_PI;
+    kamp = std::sqrt(SQR(kx)+SQR(ky)+SQR(kz));
+
+  for (int k=pmb->ks; k<=pmb->ke; ++k) {
+    for (int j=pmb->js; j<=pmb->je; ++j) {
+      for (int i=pmb->is; i<=pmb->ie; ++i) {
+
+        Real den = prim(IDN,k,j,i);
+        Real x1 = pmb->pcoord->x1v(i);
+        Real x2 = pmb->pcoord->x2v(j);
+        Real x3 = pmb->pcoord->x3v(k);
+
+        fx = +turbamp*sin(kx*x1)*cos(ky*x2)*cos(kz*x3);
+        fy = -turbamp*cos(kx*x1)*sin(ky*x2)*cos(kz*x3);
+        fz = +turbamp*sin(kz*x3);
+
+        // add to the conserved variables
+        cons(IM1,k,j,i) += dt*den*fx;
+        cons(IM2,k,j,i) += dt*den*fy;
+        cons(IM3,k,j,i) += dt*den*fz;
+
+      }
+    }
+  }
+  
+  return;
+}
+
 void StirringTheLoop(Mesh *pm){
 
   Real m[4] = {0};   // cumulative mass and momentum counter
@@ -543,6 +615,7 @@ void StirringTheLoop(Mesh *pm){
   Real x1, x2, x3,dvol;
   Real mx,my,mz,mmag,phasex,phasey,phasez,amp;
   Real fx,fy,fz,kx,ky,kz,kamp,Ax,Ay,Az,tlife,t0,qomt;
+  Real Phi;
   Real den;
   MeshBlock *pmb;
   int is, ie, js, je, ks, ke;
@@ -565,26 +638,23 @@ void StirringTheLoop(Mesh *pm){
   // Remove modes which have exceeded their lifetime
   //.................................//
 
-  // if on the first meshblock on the mesh rank (no need to repeat work shared on mesh)
-  if (pm->iuser_mesh_data[IMB](0) == 0){
-    // loop across the modes and remove dead ones
-    for (int mode = 0; mode<Nmodes; mode++) {
-      
-      // compute characteristic mode lifetime
-      mmag = std::sqrt(SQR(pm->iuser_mesh_data[TRB_IM](mode,JMX))+
-                           SQR(pm->iuser_mesh_data[TRB_IM](mode,JMY))+
-                           SQR(pm->iuser_mesh_data[TRB_IM](mode,JMZ)));
-      tlife = tcor/mmag; 
+  // loop across the modes and remove dead ones
+  for (int mode = 0; mode<Nmodes; mode++) {
+    
+    // compute characteristic mode lifetime
+    mmag = std::sqrt(SQR(pm->iuser_mesh_data[TRB_IM](mode,JMX))+
+                          SQR(pm->iuser_mesh_data[TRB_IM](mode,JMY))+
+                          SQR(pm->iuser_mesh_data[TRB_IM](mode,JMZ)));
+    tlife = tcor/mmag; 
 
-      // check if mode has exceed lifetime
-      t0 = pm->ruser_mesh_data[TRB_RM](mode,JT0);
-      if ((pm->time -t0) > tlife){
-        // flag mode as dead
-        pm->iuser_mesh_data[TRB_IM](mode,JALIVE) = DEAD;
-        // flag that there are dead modes
-        pm->iuser_mesh_data[IDEAD](0) = DEAD;
-        // std::cout << " Removing mode at " << mode << " after t-t0 = " << pm->time-t0 << " at time " << pm->time << std::endl;
-      }
+    // check if mode has exceed lifetime
+    t0 = pm->ruser_mesh_data[TRB_RM](mode,JT0);
+    if ((pm->time -t0) > tlife){
+      // flag mode as dead
+      pm->iuser_mesh_data[TRB_IM](mode,JALIVE) = DEAD;
+      // flag that there are dead modes
+      pm->iuser_mesh_data[IDEAD](0) = DEAD;
+      // std::cout << " Removing mode at " << mode << " after t-t0 = " << pm->time-t0 << " at time " << pm->time << std::endl;
     }
   }
 
@@ -686,11 +756,17 @@ void StirringTheLoop(Mesh *pm){
             Ay = (turbamp*amp)/(std::pow(kamp,(expo+2.0)/2.0))*cos(kx*x1+ky*x2+kz*x3+phasey);
             Az = (turbamp*amp)/(std::pow(kamp,(expo+2.0)/2.0))*cos(kx*x1+ky*x2+kz*x3+phasez);
 
-            fx = (ky*Az - kz*Ay);
-            fy = (kz*Ax - kx*Az);
-            fz = (kx*Ay - ky*Ax);
+            Phi = (turbamp*amp)/(std::pow(kamp,expo))*cos(kx*x1+ky*x2+kz*x3+phasex);
 
-            // add the perturbations to the primitive variables
+            fx = (solenoidal)*(ky*Az - kz*Ay);
+            fy = (solenoidal)*(kz*Ax - kx*Az);
+            fz = (solenoidal)*(kx*Ay - ky*Ax);
+
+            fx += (1.0-solenoidal)*kx*Phi;
+            fy += (1.0-solenoidal)*ky*Phi;
+            fz += (1.0-solenoidal)*kz*Phi; 
+
+            // add the perturbations to the primitive variables (velocity)
             den = pmb->phydro->w(IDN,k,j,i);
             pmb->phydro->w(IVX,k,j,i) += pm->dt*fx;
             pmb->phydro->w(IVY,k,j,i) += pm->dt*fy;
@@ -752,6 +828,179 @@ void StirringTheLoop(Mesh *pm){
   return;
 }
 
+void StirringTheLoop2(Mesh *pm){
+
+  Real m[4] = {0};   // cumulative mass and momentum counter
+
+  Real x1, x2, x3,dvol;
+  Real fx,fy,fz,kx,ky,kz;
+  Real den;
+  MeshBlock *pmb;
+  int is, ie, js, je, ks, ke;
+  int il, iu, jl, ju, kl, ku;
+
+  // extract the active cell bounds - same on all AMR refinement levels
+  is = pm->my_blocks(0)->is, ie = pm->my_blocks(0)->ie;
+  js = pm->my_blocks(0)->js, je = pm->my_blocks(0)->je;
+  ks = pm->my_blocks(0)->ks, ke = pm->my_blocks(0)->ke;
+
+  // set the bounds including ghost zones (I think that this structure is preserved with AMR)
+  il= is-NGHOST;
+  iu= ie+NGHOST;
+  jl= js-NGHOST;
+  ju= je+NGHOST;
+  kl= ks-NGHOST;
+  ku= ke+NGHOST;
+
+  //.................................//
+  // Now perform the forcing....
+  //.................................//
+
+  // loop over the meshblocks and apply the forcing
+  for (int bn=0; bn<pm->nblocal; ++bn) {
+    pmb = pm->my_blocks(bn);
+
+    // extract the cell volume - possibly different with refinement
+    dvol = pmb->pcoord->dx1f(is)*pmb->pcoord->dx2f(js)*pmb->pcoord->dx3f(ks); 
+
+    // loop over all cells (inc. ghost zones)
+    for (int k=kl; k<=ku; k++) {
+      for (int j=jl; j<=ju; j++) {
+        for (int i=il; i<=iu; i++) {
+
+          // extract the cell centered positions
+          x1 = pmb->pcoord->x1v(i);
+          x2 = pmb->pcoord->x2v(j);
+          x3 = pmb->pcoord->x3v(k);
+
+          kx = M_PI;
+          ky = M_PI;
+          kz = M_PI;
+
+          fx = +turbamp*(std::sin(kx*x1)*std::cos(ky*x2)*std::cos(kz*x3));
+          fy = -turbamp*(std::cos(kx*x1)*std::sin(ky*x2)*std::cos(kz*x3));
+          fz = +turbamp*std::sin(kz*x3);
+
+          // add the perturbations to the primitive variables
+          den = pmb->phydro->w(IDN,k,j,i);
+          pmb->phydro->w(IVX,k,j,i) += pm->dt*fx;
+          pmb->phydro->w(IVY,k,j,i) += pm->dt*fy;
+          pmb->phydro->w(IVZ,k,j,i) += pm->dt*fz;
+
+        }
+      }
+    }
+
+    // update the conserved variables
+    AthenaArray<Real> zeros;
+    zeros.NewAthenaArray(3, pm->my_blocks(bn)->ncells3, pm->my_blocks(bn)->ncells2, pm->my_blocks(bn)->ncells1);
+    pmb->peos->PrimitiveToConserved(pmb->phydro->w, zeros, pmb->phydro->u, pmb->pcoord, il, iu, jl, ju, kl, ku);
+  
+  }
+
+  return;
+}
+
+void StirringTheLoop3(Mesh *pm){
+
+  Real den;
+  MeshBlock *pmb;
+  int is, ie, js, je, ks, ke;
+  int il, iu, jl, ju, kl, ku;
+
+  Real x1, x2, x3;
+  Real kx, kx0, ky, kz,qomt;
+  Real phx1, phy1, phz1, phx2, phy2, phz2;
+  int nxt;
+  Real dAxdy, dAxdz, dAydx, dAydz, dAzdx, dAzdy;
+  Real dv1, dv2, dv3;
+
+  // extract the active cell bounds - same on all AMR refinement levels
+  is = pm->my_blocks(0)->is, ie = pm->my_blocks(0)->ie;
+  js = pm->my_blocks(0)->js, je = pm->my_blocks(0)->je;
+  ks = pm->my_blocks(0)->ks, ke = pm->my_blocks(0)->ke;
+
+  // set the bounds including ghost zones (I think that this structure is preserved with AMR)
+  il= is-NGHOST;
+  iu= ie+NGHOST;
+  jl= js-NGHOST;
+  ju= je+NGHOST;
+  kl= ks-NGHOST;
+  ku= ke+NGHOST;
+
+  //.................................//
+  // Now perform the forcing....
+  //.................................//
+
+  phx1 = udist(rng_generator)*TWO_PI;
+  phy1 = udist(rng_generator)*TWO_PI;
+  phz1 = udist(rng_generator)*TWO_PI;
+  phx2 = udist(rng_generator)*TWO_PI;
+  phy2 = udist(rng_generator)*TWO_PI;
+  phz2 = udist(rng_generator)*TWO_PI;
+
+  kx0 = (2.0*M_PI/Ly);
+  ky = (2.0*M_PI/Ly);
+  kz = (2.0*M_PI/Ly);
+
+  qomt = qshear*Omega_0*pm->time;
+
+  if (pm->time == 0.0) {
+    nxt = 1.0;
+  } else {
+    nxt = floor(1.0-qomt*ky/kx0)+1.0;
+  }
+
+  kx = kx0*nxt + qomt*ky;
+
+  // std::cout << " nxt = " << nxt << " kx = " << kx << " ky = " << ky << " kz = " << kz << std::endl;
+
+  // loop over the meshblocks and apply the forcing
+  for (int bn=0; bn<pm->nblocal; ++bn) {
+    pmb = pm->my_blocks(bn);
+
+    // loop over all cells (inc. ghost zones)
+    for (int k=kl; k<=ku; k++) {
+      for (int j=jl; j<=ju; j++) {
+        for (int i=il; i<=iu; i++) {
+
+          // extract the cell centered positions
+          x1 = pmb->pcoord->x1v(i);
+          x2 = pmb->pcoord->x2v(j);
+          x3 = pmb->pcoord->x3v(k);
+
+          // Now set compute the curl of the vector potential
+          dAxdy = -H*ky*sin(kx*x1+ky*x2+phx1)*cos(kz*x3+phx2);
+          dAxdz = -H*kz*cos(kx*x1+kx*x2+phx1)*sin(kz*x3+phx2);
+          dAydx = -H*kx*sin(kx*x1+ky*x2+phy1)*cos(kz*x3+phy2);
+          dAydz = -H*kz*cos(kx*x1+ky*x2+phy1)*sin(kz*x3+phy2);
+          dAzdx = -H*kx*sin(kx*x1+ky*x2+phz1)*cos(kz*x3+phz2);
+          dAzdy = -H*ky*sin(kx*x1+ky*x2+phz1)*cos(kz*x3+phz2);
+
+          dv1 = turbamp*H*(dAzdy - dAydz);
+          dv2 = turbamp*H*(dAxdz - dAzdx);
+          dv3 = turbamp*H*(dAydx - dAxdy);
+
+          // Add the perturbations to the primitive variables
+          Real den = pmb->phydro->w(IDN,k,j,i);
+          pmb->phydro->w(IVX,k,j,i) += dv1;
+          pmb->phydro->w(IVY,k,j,i) += dv2;
+          pmb->phydro->w(IVZ,k,j,i) += dv3;
+
+        }
+      }
+    }
+
+    // update the conserved variables
+    AthenaArray<Real> zeros;
+    zeros.NewAthenaArray(3, pm->my_blocks(bn)->ncells3, pm->my_blocks(bn)->ncells2, pm->my_blocks(bn)->ncells1);
+    pmb->peos->PrimitiveToConserved(pmb->phydro->w, zeros, pmb->phydro->u, pmb->pcoord, il, iu, jl, ju, kl, ku);
+  
+  }// end of meshblock loop
+  
+  return;
+}
+
 void MySourceTerms(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
@@ -762,6 +1011,8 @@ void MySourceTerms(MeshBlock *pmb, const Real time, const Real dt,
 
   //Apply continuous turbulent forcing
   if (inc_turb == 1) StirringThePot(pmb, time, dt, prim, prim_scalar, bcc, cons, cons_scalar);
+
+  if (inc_turb == 12) StirringThePot2(pmb, time, dt, prim, prim_scalar, bcc, cons, cons_scalar);
 
   return;
 }
