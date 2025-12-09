@@ -70,7 +70,7 @@ Omega0       = 1.0     # angular velocity of the system
 <problem>
 strat        = 1        # Switch on stratification
 
-inc_turb     = 23       # drive turbulence (0) = off (1) = source (2) = loop
+inc_turb     = 23        # drive turbulence (0) = off (1) = source (2) = loop
 turbamp      = 0.005     # Set the turbulent amplitude factor
 mxmin        = 2         
 mxmax        = 4         

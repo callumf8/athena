@@ -63,6 +63,12 @@ void StirringThePot2(MeshBlock *pmb, const Real time, const Real dt,
 void StirringTheLoop(Mesh *pm);
 void StirringTheLoop2(Mesh *pm);
 void StirringTheLoop3(Mesh *pm);
+void StirringTheLoop4(Mesh *pm);
+
+void WaveDamping(MeshBlock *pmb, const Real time, const Real dt,
+                   const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
+                   const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
+                   AthenaArray<Real> &cons_scalar);
 
 void MySourceTerms(MeshBlock *pmb, const Real time, const Real dt,
                    const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
@@ -78,6 +84,31 @@ void StratOutflowOuterX3(MeshBlock *pmb, Coordinates *pco,
                          AthenaArray<Real> &a,
                          FaceField &b, Real time, Real dt,
                          int il, int iu, int jl, int ju, int kl, int ku, int ngh);
+void InnerX1(MeshBlock *pmb, Coordinates *pco,
+                         AthenaArray<Real> &a,
+                         FaceField &b, Real time, Real dt,
+                         int il, int iu, int jl, int ju, int kl, int ku, int ngh);
+void OuterX1(MeshBlock *pmb, Coordinates *pco,
+                          AthenaArray<Real> &a,
+                          FaceField &b, Real time, Real dt,
+                          int il, int iu, int jl, int ju, int kl, int ku, int ngh);
+void InnerX2(MeshBlock *pmb, Coordinates *pco,
+                         AthenaArray<Real> &a,
+                         FaceField &b, Real time, Real dt,
+                         int il, int iu, int jl, int ju, int kl, int ku, int ngh);
+void OuterX2(MeshBlock *pmb, Coordinates *pco,
+                          AthenaArray<Real> &a,
+                          FaceField &b, Real time, Real dt,
+                          int il, int iu, int jl, int ju, int kl, int ku, int ngh);
+void InnerX3(MeshBlock *pmb, Coordinates *pco,
+                         AthenaArray<Real> &a,
+                         FaceField &b, Real time, Real dt,
+                         int il, int iu, int jl, int ju, int kl, int ku, int ngh);
+void OuterX3(MeshBlock *pmb, Coordinates *pco,
+                          AthenaArray<Real> &a,
+                          FaceField &b, Real time, Real dt,
+                          int il, int iu, int jl, int ju, int kl, int ku, int ngh);                
+
 
 namespace {
 
@@ -98,6 +129,10 @@ int mxmin,mxmax,mymin,mymax,mzmin,mzmax,Nmodes;
 Real turbamp,expo, tcor,solenoidal;
 int sign;
 TimeIntegratorTaskList *ptlist;
+
+// wave damping parameters
+Real dampwidthx, dampwidthy, dampwidthz;
+Real damptime;
 
 // global switches
 int ALIVE = 1;
@@ -140,6 +175,14 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
 
   // forced turbulence parameters
   inc_turb = pin->GetOrAddInteger("problem","inc_turb", 0);
+
+  // wave damping parameters
+  damptime = pin->GetOrAddReal("problem","damptime", 0.0);
+  if (damptime > 0.0) {
+    dampwidthx = pin->GetOrAddReal("problem","dampwidthx", 0.1*(mesh_size.x1max - mesh_size.x1min));
+    dampwidthy = pin->GetOrAddReal("problem","dampwidthy", 0.1*(mesh_size.x2max - mesh_size.x2min));
+    dampwidthz = pin->GetOrAddReal("problem","dampwidthz", 0.1*(mesh_size.x3max - mesh_size.x3min));;
+  }
 
   if (inc_turb){
     umeshsize = n_bh + 2;
@@ -215,11 +258,31 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
   EnrollUserExplicitSourceFunction(MySourceTerms);
 
   // Enroll user-defined boundary conditions
+  // if (mesh_bcs[BoundaryFace::inner_x3] == GetBoundaryFlag("user")) {
+  //   EnrollUserBoundaryFunction(BoundaryFace::inner_x3, StratOutflowInnerX3);
+  // }
+  // if (mesh_bcs[BoundaryFace::outer_x3] == GetBoundaryFlag("user")) {
+  //   EnrollUserBoundaryFunction(BoundaryFace::outer_x3, StratOutflowOuterX3);
+  // }
+
+  // enroll user-defined boundary condition
+  if (mesh_bcs[BoundaryFace::inner_x1] == GetBoundaryFlag("user")) {
+    EnrollUserBoundaryFunction(BoundaryFace::inner_x1, InnerX1);
+  }
+  if (mesh_bcs[BoundaryFace::outer_x1] == GetBoundaryFlag("user")) {
+    EnrollUserBoundaryFunction(BoundaryFace::outer_x1, OuterX1);
+  }
+  if (mesh_bcs[BoundaryFace::inner_x2] == GetBoundaryFlag("user")) {
+    EnrollUserBoundaryFunction(BoundaryFace::inner_x2, InnerX2);
+  }
+  if (mesh_bcs[BoundaryFace::outer_x2] == GetBoundaryFlag("user")) {
+    EnrollUserBoundaryFunction(BoundaryFace::outer_x2, OuterX2);
+  }
   if (mesh_bcs[BoundaryFace::inner_x3] == GetBoundaryFlag("user")) {
-    EnrollUserBoundaryFunction(BoundaryFace::inner_x3, StratOutflowInnerX3);
+    EnrollUserBoundaryFunction(BoundaryFace::inner_x3, InnerX3);
   }
   if (mesh_bcs[BoundaryFace::outer_x3] == GetBoundaryFlag("user")) {
-    EnrollUserBoundaryFunction(BoundaryFace::outer_x3, StratOutflowOuterX3);
+    EnrollUserBoundaryFunction(BoundaryFace::outer_x3, OuterX3);
   }
 
   // Enroll user-defined refinement condition
@@ -353,7 +416,13 @@ void Mesh::UserWorkInLoop() {
     if (time >= tdrive) {
       StirringTheLoop3(this);
       tdrive += tcor;
-      
+    }
+  }
+
+  if (inc_turb == 24) {
+    if (time >= tdrive) {
+      StirringTheLoop4(this);
+      tdrive += tcor;
     }
   }
 
@@ -1001,6 +1070,154 @@ void StirringTheLoop3(Mesh *pm){
   return;
 }
 
+void StirringTheLoop4(Mesh *pm){
+
+  Real den;
+  MeshBlock *pmb;
+  int is, ie, js, je, ks, ke;
+  int il, iu, jl, ju, kl, ku;
+
+  Real x1, x2, x3;
+  Real kx, kx0, ky, kz,qomt;
+  Real phx1, phy1, phz1, phx2, phy2, phz2;
+  int nxt;
+  Real dAxdy, dAxdz, dAydx, dAydz, dAzdx, dAzdy;
+  Real dv1, dv2, dv3;
+
+  // extract the active cell bounds - same on all AMR refinement levels
+  is = pm->my_blocks(0)->is, ie = pm->my_blocks(0)->ie;
+  js = pm->my_blocks(0)->js, je = pm->my_blocks(0)->je;
+  ks = pm->my_blocks(0)->ks, ke = pm->my_blocks(0)->ke;
+
+  // set the bounds including ghost zones (I think that this structure is preserved with AMR)
+  il= is-NGHOST;
+  iu= ie+NGHOST;
+  jl= js-NGHOST;
+  ju= je+NGHOST;
+  kl= ks-NGHOST;
+  ku= ke+NGHOST;
+
+  //.................................//
+  // Now perform the forcing....
+  //.................................//
+
+  phx1 = udist(rng_generator)*TWO_PI;
+  phy1 = udist(rng_generator)*TWO_PI;
+  phz1 = udist(rng_generator)*TWO_PI;
+  phx2 = udist(rng_generator)*TWO_PI;
+  phy2 = udist(rng_generator)*TWO_PI;
+  phz2 = udist(rng_generator)*TWO_PI;
+
+  int nk = floor(Ly/H0);
+
+  kx0 = (2.0*M_PI*nk/Ly);
+  ky = (2.0*M_PI*nk/Ly);
+  kz = (2.0*M_PI*nk/Ly);
+
+  qomt = qshear*Omega_0*pm->time;
+
+  if (pm->time == 0.0) {
+    nxt = 1.0;
+  } else {
+    nxt = floor(1.0-qomt*ky/kx0)+1.0;
+  }
+
+  kx = kx0*nxt + qomt*ky;
+
+  // std::cout << " nxt = " << nxt << " kx = " << kx << " ky = " << ky << " kz = " << kz << std::endl;
+
+  // loop over the meshblocks and apply the forcing
+  for (int bn=0; bn<pm->nblocal; ++bn) {
+    pmb = pm->my_blocks(bn);
+
+    // loop over all cells (inc. ghost zones)
+    for (int k=kl; k<=ku; k++) {
+      for (int j=jl; j<=ju; j++) {
+        for (int i=il; i<=iu; i++) {
+
+          // extract the cell centered positions
+          x1 = pmb->pcoord->x1v(i);
+          x2 = pmb->pcoord->x2v(j);
+          x3 = pmb->pcoord->x3v(k);
+
+          // Now set compute the curl of the vector potential
+          dAxdy = -H0*ky*sin(kx*x1+ky*x2+phx1)*cos(kz*x3+phx2);
+          dAxdz = -H0*kz*cos(kx*x1+kx*x2+phx1)*sin(kz*x3+phx2);
+          dAydx = -H0*kx*sin(kx*x1+ky*x2+phy1)*cos(kz*x3+phy2);
+          dAydz = -H0*kz*cos(kx*x1+ky*x2+phy1)*sin(kz*x3+phy2);
+          dAzdx = -H0*kx*sin(kx*x1+ky*x2+phz1)*cos(kz*x3+phz2);
+          dAzdy = -H0*ky*sin(kx*x1+ky*x2+phz1)*cos(kz*x3+phz2);
+
+          dv1 = turbamp*H0*(dAzdy - dAydz);
+          dv2 = turbamp*H0*(dAxdz - dAzdx);
+          dv3 = turbamp*H0*(dAydx - dAxdy);
+
+          // Add the perturbations to the primitive variables
+          Real den = pmb->phydro->w(IDN,k,j,i);
+          pmb->phydro->w(IVX,k,j,i) += dv1;
+          pmb->phydro->w(IVY,k,j,i) += dv2;
+          pmb->phydro->w(IVZ,k,j,i) += dv3;
+
+        }
+      }
+    }
+
+    // update the conserved variables
+    AthenaArray<Real> zeros;
+    zeros.NewAthenaArray(3, pm->my_blocks(bn)->ncells3, pm->my_blocks(bn)->ncells2, pm->my_blocks(bn)->ncells1);
+    pmb->peos->PrimitiveToConserved(pmb->phydro->w, zeros, pmb->phydro->u, pmb->pcoord, il, iu, jl, ju, kl, ku);
+  
+  }// end of meshblock loop
+  
+  return;
+}
+
+void WaveDamping(MeshBlock *pmb, const Real time, const Real dt,
+              const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
+              const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
+              AthenaArray<Real> &cons_scalar){
+
+  // Apply wave damping in the boundary zones
+  for (int k=pmb->ks; k<=pmb->ke; ++k) {
+      for (int j=pmb->js; j<=pmb->je; ++j) {
+        for (int i=pmb->is; i<=pmb->ie; ++i) {
+
+          Real x1 = pmb->pcoord->x1v(i);
+          Real x2 = pmb->pcoord->x2v(j);
+          Real x3 = pmb->pcoord->x3v(k);
+
+          // lower x1 boundary
+          if ((std::abs(x1-pmb->pmy_mesh->mesh_size.x1min) < dampwidthx) || 
+              (std::abs(x1-pmb->pmy_mesh->mesh_size.x1max) < dampwidthx) ||
+              (std::abs(x2-pmb->pmy_mesh->mesh_size.x2min) < dampwidthy) ||
+              (std::abs(x2-pmb->pmy_mesh->mesh_size.x2max) < dampwidthy) ||
+              (std::abs(x3-pmb->pmy_mesh->mesh_size.x3min) < dampwidthz) ||
+              (std::abs(x3-pmb->pmy_mesh->mesh_size.x3max) < dampwidthz)){
+
+            Real den_target = 1.0;
+            if (strat){   
+              den_target *= std::exp(-x3*x3/(2.0*H0*H0));
+            }
+
+            Real vx_target = 0;
+            Real vy_target = -qshear*Omega_0*x1;
+            Real vz_target = 0;
+
+            cons(IDN,k,j,i) -= dt*(prim(IDN,k,j,i)-den_target)/damptime;
+            cons(IM1,k,j,i) -= dt*(prim(IVX,k,j,i)-vx_target)*prim(IDN,k,j,i)/damptime;
+            cons(IM2,k,j,i) -= dt*(prim(IVY,k,j,i)-vy_target)*prim(IDN,k,j,i)/damptime;
+            cons(IM3,k,j,i) -= dt*(prim(IVZ,k,j,i)-vz_target)*prim(IDN,k,j,i)/damptime;
+
+          }
+
+        }
+      }
+  }
+
+
+  return;
+}
+
 void MySourceTerms(MeshBlock *pmb, const Real time, const Real dt,
               const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_scalar,
               const AthenaArray<Real> &bcc, AthenaArray<Real> &cons,
@@ -1008,6 +1225,8 @@ void MySourceTerms(MeshBlock *pmb, const Real time, const Real dt,
 
   // Apply vertical gravity forcing
   if (strat) VertGrav(pmb, time, dt, prim, prim_scalar, bcc, cons, cons_scalar);
+
+  if (damptime >0.0) WaveDamping(pmb, time, dt, prim, prim_scalar, bcc, cons, cons_scalar);
 
   //Apply continuous turbulent forcing
   if (inc_turb == 1) StirringThePot(pmb, time, dt, prim, prim_scalar, bcc, cons, cons_scalar);
@@ -1112,6 +1331,148 @@ void StratOutflowOuterX3(MeshBlock *pmb, Coordinates *pco,
         }
         if (NON_BAROTROPIC_EOS)
           prim(IPR,ku+k,j,i) = prim(IDN,ku+k,j,i)*Tku;
+      }
+    }
+  }
+  return;
+}
+
+// Now test the boundary conditions with the oxthena version instead.
+// Vertically extrapolated boundary condition
+// Radially impose fixed shear at the boundaries
+
+void InnerX1(MeshBlock *pmb, Coordinates *pco, AthenaArray<Real> &prim, FaceField &b, 
+			 Real time, Real dt, int il, int iu, int jl, int ju, int kl, int ku, 
+			 int ngh) {
+
+  for (int k = kl; k <= ku; ++k) {    
+    const Real rd = std::exp(-pco->x3v(k)*pco->x3v(k)/(2.0*H0*H0));
+    for (int j = jl; j <= ju; ++j) {
+      for (int i = 1; i <= ngh; ++i) {
+        // set all ghosts to ambient shear
+        prim(IDN,k,j,il-i) = rd;
+        prim(IVX,k,j,il-i) = 0.0;
+        prim(IVY,k,j,il-i) = -qshear*Omega_0*pco->x1v(il-i);
+        prim(IVZ,k,j,il-i) = 0.0;
+      }
+    }
+  }
+  return;
+}
+
+void OuterX1(MeshBlock *pmb, Coordinates *pco, AthenaArray<Real> &prim, FaceField &b, 
+			        Real time, Real dt, int il, int iu, int jl, int ju, int kl, int ku, 
+			        int ngh) {
+
+  for (int k = kl; k <= ku; ++k) {
+    const Real rd = std::exp(-pco->x3v(k)*pco->x3v(k)/(2.0*H0*H0));
+    for (int j = jl; j <= ju; ++j) {
+      for (int i = 1; i <= ngh; ++i) {
+        // set all ghosts to ambient shear
+        prim(IDN,k,j,iu+i) = rd;
+        prim(IVX,k,j,iu+i) = 0.0;
+        prim(IVY,k,j,iu+i) = -qshear*Omega_0*pco->x1v(iu+i);
+        prim(IVZ,k,j,iu+i) = 0.0;
+      }
+    }
+  }
+  return;
+}
+
+void InnerX2(MeshBlock *pmb, Coordinates *pco, AthenaArray<Real> &prim, FaceField &b, 
+			        Real time, Real dt, int il, int iu, int jl, int ju, int kl, int ku, 
+			        int ngh) {
+
+  for (int k = kl; k <= ku; ++k) {
+    const Real rd = std::exp(-pco->x3v(k)*pco->x3v(k)/(2.0*H0*H0));
+    for (int j = 1; j <= ngh; ++j) {
+      for (int i = il; i <= iu; ++i) {
+        // is cell upstream or downstream
+        if (pco->x1v(i) < 0.0) {
+	        // upstream, refill
+	        prim(IDN,k,jl-j,i) = rd;
+	        prim(IVX,k,jl-j,i) = 0.0;
+	        prim(IVY,k,jl-j,i) = -qshear*Omega_0*pco->x1v(i);
+          prim(IVZ,k,jl-j,i) = 0.0;
+
+	      } else {
+	        // downstream, match to domain
+	        prim(IDN,k,jl-j,i) = prim(IDN,k,jl,i);
+	        prim(IVX,k,jl-j,i) = prim(IVX,k,jl,i);
+	        prim(IVY,k,jl-j,i) = prim(IVY,k,jl,i);
+          prim(IVZ,k,jl-j,i) = prim(IVZ,k,jl,i);
+
+	      }
+      }
+    }
+  }
+  return;
+}
+
+void OuterX2(MeshBlock *pmb, Coordinates *pco, AthenaArray<Real> &prim, FaceField &b, 
+			        Real time, Real dt, int il, int iu, int jl, int ju, int kl, int ku, 
+			        int ngh) {
+  // set primitive variables for upper side of box
+
+  for (int k = kl; k <= ku; ++k) {
+    const Real rd = std::exp(-pco->x3v(k)*pco->x3v(k)/(2.0*H0*H0));
+    for (int j = 1; j <= ngh; ++j) {
+      for (int i  = il; i <= iu; ++i) {
+        // is cell upstream or downstream?
+        if (pco->x1v(i) > 0.0) {
+	  	    // upstream, refill
+	        prim(IDN,k,ju+j,i) = rd;
+	        prim(IVX,k,ju+j,i) = 0.0;
+	        prim(IVY,k,ju+j,i) = -qshear*Omega_0*pco->x1v(i);
+          prim(IVZ,k,ju+j,i) = 0.0;
+	        
+        } else {
+	        // downstream, match to domain
+	        prim(IDN,k,ju+j,i) = prim(IDN,k,ju,i);
+	        prim(IVX,k,ju+j,i) = prim(IVX,k,ju,i);
+	        prim(IVY,k,ju+j,i) = prim(IVY,k,ju,i);
+          prim(IVZ,k,ju+j,i) = prim(IVZ,k,ju,i);
+        }
+      }
+    }
+  }
+  return;
+}
+
+void InnerX3(MeshBlock *pmb, Coordinates *pco, AthenaArray<Real> &prim, FaceField &b, 
+              Real time, Real dt, int il, int iu, int jl, int ju, int kl, int ku, 
+              int ngh) {
+
+  for (int k = 1; k <= ngh; ++k) {
+    const Real rd = std::exp(-pco->x3v(kl-k)*pco->x3v(kl-k)/(2.0*H0*H0));
+    for (int j = jl; j <= ju; ++j) {
+      for (int i = il; i <= iu; ++i) {
+        // set all ghosts to ambient shear
+        prim(IDN,kl-k,j,i) = rd;
+        prim(IVX,kl-k,j,i) = 0.0;
+        prim(IVY,kl-k,j,i) = - qshear*Omega_0*pco->x1v(i);
+        prim(IVZ,kl-k,j,i) = 0.0;
+        
+      }
+    }
+  }
+  return;
+}
+
+void OuterX3(MeshBlock *pmb, Coordinates *pco, AthenaArray<Real> &prim, FaceField &b, 
+  Real time, Real dt, int il, int iu, int jl, int ju, int kl, int ku, 
+  int ngh) {
+
+  for (int k = 1; k <= ngh; ++k) {
+    const Real rd = std::exp(-pco->x3v(ku+k)*pco->x3v(ku+k)/(2.0*H0*H0));
+    for (int j = jl; j <= ju; ++j) {
+      for (int i = il; i <= iu; ++i) {
+        // set all ghosts to ambient shear
+        prim(IDN,ku+k,j,i) = rd;
+        prim(IVX,ku+k,j,i) = 0.0;
+        prim(IVY,ku+k,j,i) = - qshear*Omega_0*pco->x1v(i);
+        prim(IVZ,ku+k,j,i) = 0.0;
+        
       }
     }
   }
